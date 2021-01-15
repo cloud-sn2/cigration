@@ -1,0 +1,6 @@
+# cigration
+comment = 'Citus shards migration tool'
+default_version = '1.0'
+requires = 'citus,dblink'
+superuser = true
+relocatable = true
