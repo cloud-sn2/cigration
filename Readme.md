@@ -79,11 +79,20 @@ make install
 sudo PATH=/usr/pgsql-12/bin:$PATH make install
 ```
 
+也可以通过拷贝文件的方式安装,比如
+
+```
+cp cigration.control cigration--*.sql /usr/pgsql-12/share/extension/
+```
+
 连接CN节点安装cigration扩展
 
 ```
 create extension if not exists dblink;
+
+SET citus.enable_ddl_propagation TO off;
 create extension cigration;
+RESET citus.enable_ddl_propagation;
 ```
 
 **注意**
@@ -165,10 +174,6 @@ select * from cigration.cigration_create_rebalance_job();
      1 |      2 | {102715,102723}           | worker2       | worker3       |                 2 |           917504
 (2 rows)
 ```
-
-
-
-
 
 查看生成的job
 
