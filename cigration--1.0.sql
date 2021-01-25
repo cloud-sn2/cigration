@@ -1714,7 +1714,7 @@ BEGIN
         end loop;
     end loop;
     
-    create_schema_info := format('CREATE SCHEMA IF NOT EXISTS backup_shard_migration_job_%s', var_jobid);
+    create_schema_info := format('CREATE SCHEMA IF NOT EXISTS cigration_recyclebin_%s', var_jobid);
     -- CREATE BACKUP SCHEMA ON CN NODE(TODO:CREATE ORPERATION IS NEEDED?)
     -- execute create_schema_info;
     
@@ -2301,14 +2301,14 @@ BEGIN
     -- 移动旧的分片到备份schema下
     foreach logical_relid in array logical_relid_list
     loop
-        PERFORM dblink_exec(dblink_source_name,format('ALTER TABLE IF EXISTS %s SET SCHEMA backup_shard_migration_job_%s', logical_relid, jobid_input));
+        PERFORM dblink_exec(dblink_source_name,format('ALTER TABLE IF EXISTS %s SET SCHEMA cigration_recyclebin_%s', logical_relid, jobid_input));
         
         execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_node, functionid, sql) values(%L, %L, %L, %L, %L)', 
                 jobid_input, taskid_input, source_node_name, 'cigration.cigration_drop_old_shard',
-                format('ALTER TABLE IF EXISTS %s SET SCHEMA backup_shard_migration_job_%s', logical_relid, jobid_input));
+                format('ALTER TABLE IF EXISTS %s SET SCHEMA cigration_recyclebin_%s', logical_relid, jobid_input));
         execute execute_sql;
         -- debug信息
-        RAISE DEBUG 'ALTER SHARD [%] SET SCHEMA backup_shard_migration_job_%.', logical_relid, jobid_input;
+        RAISE DEBUG 'ALTER SHARD [%] SET SCHEMA cigration_recyclebin_%.', logical_relid, jobid_input;
     end loop;
     
     -- 清理掉dblink后直接退出
@@ -2434,13 +2434,13 @@ BEGIN
     foreach logical_relid in array logical_relid_list
     loop
         BEGIN
-            PERFORM dblink_exec(dblink_target_con_name,format('ALTER TABLE IF EXISTS %s SET SCHEMA backup_shard_migration_job_%s',
+            PERFORM dblink_exec(dblink_target_con_name,format('ALTER TABLE IF EXISTS %s SET SCHEMA cigration_recyclebin_%s',
                     logical_relid, jobid_input));
             execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_node, functionid, sql) values (%L, %L, %L, %L, %L)',
                     jobid_input, taskid_input, target_node_name, 'cigration.cigration_cancel_shard_migration_task',
-                    format('ALTER TABLE IF EXISTS %s SET SCHEMA backup_shard_migration_job_%s', logical_relid, jobid_input));
+                    format('ALTER TABLE IF EXISTS %s SET SCHEMA cigration_recyclebin_%s', logical_relid, jobid_input));
             execute execute_sql;
-            RAISE DEBUG 'ALTER TABLE [%] SET SCHEMA backup_shard_migration_job_%.', logical_relid, jobid_input;
+            RAISE DEBUG 'ALTER TABLE [%] SET SCHEMA cigration_recyclebin_%.', logical_relid, jobid_input;
         EXCEPTION WHEN DUPLICATE_TABLE THEN
             --如果已经存在，则直接drop
             PERFORM dblink_exec(dblink_target_con_name,format('DROP TABLE IF EXISTS %s', logical_relid));
@@ -2672,17 +2672,17 @@ BEGIN
             raise exception 'shardid:% is still active in this citus cluster,can not be deleted.',shardid_list;
         end if;
 
-        -- 目标端的定义移动到:backup_shard_migration_job_jobid下面
+        -- 目标端的定义移动到:cigration_recyclebin_jobid下面
         foreach logical_relid in array logical_relid_list
         loop
             BEGIN
                 -- 正常情况下，分区表的主表删除之后，就不需要再删除分区子表了，加了if exists可以回避表不存在的问题
-                PERFORM dblink_exec(dblink_target_con_name,format('ALTER TABLE IF EXISTS %s SET SCHEMA backup_shard_migration_job_%s', 
+                PERFORM dblink_exec(dblink_target_con_name,format('ALTER TABLE IF EXISTS %s SET SCHEMA cigration_recyclebin_%s', 
                         logical_relid, task_info.jobid));
 
                 execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_node, functionid, sql) values(%L, %L, %L, %L, %L)', 
                         task_info.jobid, task_info.taskid, task_info.target_nodename, 'cigration.cigration_shard_migration_env_cleanup',
-                        format('ALTER TABLE IF EXISTS %s SET SCHEMA backup_shard_migration_job_%s', logical_relid, task_info.jobid));
+                        format('ALTER TABLE IF EXISTS %s SET SCHEMA cigration_recyclebin_%s', logical_relid, task_info.jobid));
                 execute execute_sql;
                 raise debug 'dblink_target_con_name:%,  logical_relid:%',dblink_target_con_name,logical_relid;
             EXCEPTION WHEN DUPLICATE_TABLE THEN
@@ -3294,62 +3294,65 @@ BEGIN
 END;
 $cigration_get_fulltbname$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION cigration.cigration_shard_migration_middle_data_cleanup(jobid_input integer default null)
+CREATE OR REPLACE FUNCTION cigration.cigration_cleanup_recyclebin(jobid_input integer default null)
 RETURNS void
 -- 
--- 函数名：cigration.cigration_shard_migration_middle_data_cleanup
+-- 函数名：cigration.cigration_cleanup_recyclebin
 -- 函数功能：清理各个worker上残留的备份数据
 -- 参数：jobid_input integer
 -- 返回值：true/false 
 --  
-AS $cigration_shard_migration_middle_data_cleanup$
+AS $cigration_cleanup_recyclebin$
 DECLARE
     recordinfo record;
     execute_sql text;
 BEGIN
     --执行节点必须是CN节点
     IF (SELECT CASE WHEN (select count(*) from pg_dist_node)>0 THEN (select groupid from pg_dist_local_group) ELSE -1 END) <> 0 THEN
-        RAISE EXCEPTION 'function cigration_shard_migration_middle_data_cleanup could only be executed on coordinate node.';
+        RAISE EXCEPTION 'function cigration_cleanup_recyclebin could only be executed on coordinate node.';
     END IF;
 
     if (jobid_input is null) then
-        for recordinfo in SELECT DISTINCT(jobid) from cigration.pg_citus_shard_migration_history where jobid not in (SELECT DISTINCT(jobid) from cigration.pg_citus_shard_migration) GROUP BY jobid ORDER BY jobid loop
-            execute_sql := format('select run_command_on_workers(''DROP SCHEMA IF EXISTS backup_shard_migration_job_%s CASCADE'')', recordinfo.jobid);
+        for recordinfo in select distinct split_part(schema_name,'_',3)::int jobid
+		                  from cigration.cigration_get_recyclebin_metadata()
+                          where split_part(schema_name,'_',3)::int not in (SELECT DISTINCT(jobid) from cigration.pg_citus_shard_migration)
+						  ORDER BY split_part(schema_name,'_',3)::int loop
+            execute_sql := format('select run_command_on_workers(''DROP SCHEMA IF EXISTS cigration_recyclebin_%s CASCADE'')', recordinfo.jobid);
             EXECUTE execute_sql;
         end loop;
     else
         IF (select count(*) from cigration.pg_citus_shard_migration where jobid=jobid_input) > 0 THEN
             RAISE EXCEPTION 'The input param jobid_input is invalid because of the migration job depends it.';
         END IF;
-        execute_sql := format('select run_command_on_workers(''DROP SCHEMA IF EXISTS backup_shard_migration_job_%s CASCADE'')', jobid_input);
+        execute_sql := format('select run_command_on_workers(''DROP SCHEMA IF EXISTS cigration_recyclebin_%s CASCADE'')', jobid_input);
         EXECUTE execute_sql;
     end if;
 END;
-$cigration_shard_migration_middle_data_cleanup$ LANGUAGE plpgsql;
+$cigration_cleanup_recyclebin$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION cigration.cigration_get_shard_migration_middle_schemainfo()
-RETURNS TABLE(schema_nodename text, schema_nodeport int, schema_name text)
+CREATE OR REPLACE FUNCTION cigration.cigration_get_recyclebin_metadata()
+RETURNS TABLE(nodename text, nodeport int, schema_name text)
 -- 
--- 函数名：cigration.cigration_get_shard_migration_middle_schemainfo
--- 函数功能：在CN上通过dblink获取各个worker上是否残存迁移中残留的schema信息
+-- 函数名：cigration.cigration_get_recyclebin_metadata
+-- 函数功能：在CN上通过dblink获取各个worker上归档旧分片的schema
 -- 参数：无
 -- 返回值：
---      schema_nodename：残存的node名称信息
---      schema_nodeport：残存的node端口信息
---      schema_name    ：残存的schema信息
+--      nodename    ：垃圾站的node名称信息
+--      nodeport    ：垃圾站的node端口信息
+--      schema_name ：垃圾站的schema信息
 -- 
 AS $$
 BEGIN
     --执行节点必须是CN节点
     IF (SELECT CASE WHEN (select count(*) from pg_dist_node)>0 THEN (select groupid from pg_dist_local_group) ELSE -1 END) <> 0 THEN
-        RAISE EXCEPTION 'function cigration_shard_migration_middle_data_cleanup could only be executed on coordinate node.';
+        RAISE EXCEPTION 'function cigration_cleanup_recyclebin could only be executed on coordinate node.';
     END IF;
 
-    RETURN QUERY select nodename, nodeport,a.* from
-                 pg_dist_node,
-                 dblink(format('host=%s port=%s user=%s dbname=%s',nodename,nodeport,current_user, current_database()),
-                    'SELECT nspname FROM pg_catalog.pg_namespace WHERE nspname ~ ''^backup_shard_migration_job_'' ORDER BY 1') a(schemaname text)
-                 order by nodename;
+    RETURN QUERY select a.nodename, a.nodeport,b.* from
+                 pg_dist_node a,
+                 dblink(format('host=%s port=%s user=%s dbname=%s',a.nodename,a.nodeport,current_user, current_database()),
+                    'SELECT nspname FROM pg_catalog.pg_namespace WHERE nspname ~ ''^cigration_recyclebin_'' ORDER BY 1') b(schemaname text)
+                 order by a.nodename;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -3371,7 +3374,7 @@ DECLARE
 BEGIN
     --执行节点必须是CN节点
     IF (SELECT CASE WHEN (select count(*) from pg_dist_node)>0 THEN (select groupid from pg_dist_local_group) ELSE -1 END) <> 0 THEN
-        RAISE EXCEPTION 'function cigration_shard_migration_middle_data_cleanup could only be executed on coordinate node.';
+        RAISE EXCEPTION 'function cigration_cleanup_recyclebin could only be executed on coordinate node.';
     END IF;
 
     --判断jobid_input是否为空

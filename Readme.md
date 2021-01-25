@@ -87,10 +87,11 @@ cp cigration.control cigration--*.sql /usr/pgsql-12/share/extension/
 连接CN节点安装cigration扩展
 
 ```
-create extension if not exists dblink;
-
 SET citus.enable_ddl_propagation TO off;
+
+create extension if not exists dblink;
 create extension cigration;
+
 RESET citus.enable_ddl_propagation;
 ```
 
@@ -255,29 +256,31 @@ order by pg_dist_shard.logicalrelid, pg_dist_shard_placement.shardid;
 
 ## 5.5 清理旧分片
 
-上面的迁移作业完成后，旧的分片并没有被实际删掉，而只是移到了名称为`backup_shard_migration_job_$jobid`的临时schema里。这是出于安全的考虑，万一迁移出现问题还可以把旧的分片数据找回来。在确认分片迁移无误后，比如平稳运行一段时间后，可以把这些旧分片清理掉。代入jobid再执行以下的清理SQL。
+上面的迁移作业完成后，旧的分片并没有被实际删掉，而只是移到了名称为`cigration_recyclebin_$job`的临时schema里。这是出于安全的考虑，万一迁移出现问题还可以把旧的分片数据找回来。在确认分片迁移无误后，比如平稳运行一段时间后，可以把这些旧分片清理掉。代入jobid再执行以下的清理SQL。
 
 ```
-select cigration.cigration_shard_migration_middle_data_cleanup(1);
+select cigration.cigration_cleanup_recyclebin(1);
 ```
 
 
 
 ## 6. 主要函数一览
 
-| **函数名称**                                  | **返回类型** | **描述**                                    |
-| --------------------------------------------- | ------------ | ------------------------------------------- |
-| cigration_create_del_node_job                 | record       | 创建缩容分片迁移作业                        |
-| cigration_create_rebalance_job                | record       | 创建再均衡分片迁移作业                      |
-| cigration_create_worker_migration_job         | record       | 创建worker替换的分片迁移作业                |
-| cigration_batch_run_migration_tasks           | boolean      | 执行分片迁移作业                            |
-| cigration_shard_migration_middle_data_cleanup | void         | 清理旧分片                                  |
-| cigration_cancel_shard_migration_job          | text         | 取消分片迁移作业                            |
-| cigration_generate_parallel_schedule          | record       | 对指定的分片迁移作业生成可并行调度的执行SQL |
-| cigration_start_shard_migration_task          | text         | 启动单个迁移任务                            |
-| cigration_complete_shard_migration_task       | text         | 完成单个迁移任务                            |
-| cigration_cancel_shard_migration_task         | text         | 取消单个迁移任务                            |
-| cigration_shard_migration_env_cleanup         | void         | 清理分片迁移失败后的残留环境                |
+| **函数名称**                            | **返回类型** | **描述**                                    |
+| --------------------------------------- | ------------ | ------------------------------------------- |
+| cigration_create_del_node_job           | record       | 创建缩容分片迁移作业                        |
+| cigration_create_rebalance_job          | record       | 创建再均衡分片迁移作业                      |
+| cigration_create_worker_migration_job   | record       | 创建worker替换的分片迁移作业                |
+| cigration_batch_run_migration_tasks     | boolean      | 执行分片迁移作业                            |
+| cigration_cleanup_recyclebin            | void         | 清理旧分片                                  |
+| cigration_cancel_shard_migration_job    | text         | 取消分片迁移作业                            |
+| cigration_generate_parallel_schedule    | record       | 对指定的分片迁移作业生成可并行调度的执行SQL |
+| cigration_start_shard_migration_task    | text         | 启动单个迁移任务                            |
+| cigration_complete_shard_migration_task | text         | 完成单个迁移任务                            |
+| cigration_cancel_shard_migration_task   | text         | 取消单个迁移任务                            |
+| cigration_shard_migration_env_cleanup   | void         | 清理分片迁移失败后的残留环境                |
+
+
 
 ## 5. 表一览
 
@@ -315,7 +318,7 @@ error_message
 - completed
   - 执行完成的任务
 - error
-  - 中途出错的任务。调用`cigration_shard_migration_middle_data_cleanup()`做清理操作后，可以回到init状态，继续执行。
+  - 中途出错的任务。调用`cigration_cleanup_recyclebin()`做清理操作后，可以回到init状态，继续执行。
 - canceled
   - 被主动取消任务。可以调用`cigration_start_shard_migration_task()`继续开始
 
