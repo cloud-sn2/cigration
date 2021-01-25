@@ -1,0 +1,30 @@
+select from master_add_node(:'worker_1_host', :worker_1_port);
+--
+(1 row)
+
+select from master_add_node(:'worker_2_host', :worker_2_port);
+--
+(1 row)
+
+select from master_add_node(:'worker_3_host', :worker_3_port);
+--
+(1 row)
+
+create extension if not exists dblink;
+select run_command_on_workers('create extension if not exists dblink');
+           run_command_on_workers           
+--------------------------------------------
+ (worker_1_host,57637,t,"CREATE EXTENSION")
+ (worker_2_host,57638,t,"CREATE EXTENSION")
+ (worker_3_host,57639,t,"CREATE EXTENSION")
+(3 rows)
+
+create extension if not exists cigration;
+select run_command_on_workers('create extension if not exists cigration');
+           run_command_on_workers           
+--------------------------------------------
+ (worker_1_host,57637,t,"CREATE EXTENSION")
+ (worker_2_host,57638,t,"CREATE EXTENSION")
+ (worker_3_host,57639,t,"CREATE EXTENSION")
+(3 rows)
+

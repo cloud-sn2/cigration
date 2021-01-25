@@ -1,0 +1,404 @@
+/** 
+测试环境信息
+CN：127.0.0.1
+    WORKER1：worker_1_host/57637
+    WORKER2：worker_2_host/57638
+    WORKER3：worker_3_host/57639
+
+worker_1_host、worker_2_host、worker_3_host：都是127.0.0.1
+*/
+set datestyle = ISO, YMD;
+set search_path = cigration_regress_test, cigration, public;
+set citus.shard_count = 8;
+set client_min_messages to warning;
+drop schema if exists cigration_regress_test cascade;
+create schema cigration_regress_test;
+--
+-- 1. 建表
+--
+-- 创建2组亲和的分片表
+create table dist1(c1 int primary key, c2 text);
+create table dist2(c1 int primary key, c2 text);
+create table dist3(c1 int primary key, c2 text);
+create table dist4(c1 int primary key, c2 text);
+select create_distributed_table('dist1','c1', colocate_with=>'none');
+ create_distributed_table 
+--------------------------
+ 
+(1 row)
+
+select create_distributed_table('dist2','c1', colocate_with=>'dist1');
+ create_distributed_table 
+--------------------------
+ 
+(1 row)
+
+select create_distributed_table('dist3','c1', colocate_with=>'dist1');
+ create_distributed_table 
+--------------------------
+ 
+(1 row)
+
+select create_distributed_table('dist4','c1', colocate_with=>'none');
+ create_distributed_table 
+--------------------------
+ 
+(1 row)
+
+-- 插入数据
+insert into dist1 select generate_series(1,100000), 'aaa';
+insert into dist2 select generate_series(1,10000), 'bbb';
+insert into dist4 select generate_series(1,100000), 'ddd';
+-- 查看所有分片的初始分布
+select nodename,
+       nodeport,
+	   logicalrelid,
+	   shardminvalue,
+	   shardmaxvalue
+from pg_dist_shard_placement p
+     join pg_dist_shard s on(p.shardid = s.shardid)
+where logicalrelid::text ~ 'dist'
+order by nodename,nodeport,logicalrelid,shardminvalue;
+   nodename    | nodeport | logicalrelid | shardminvalue | shardmaxvalue 
+---------------+----------+--------------+---------------+---------------
+ worker_1_host |    57637 | dist1        | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist1        | -2147483648   | -1610612737
+ worker_1_host |    57637 | dist1        | -536870912    | -1
+ worker_1_host |    57637 | dist2        | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist2        | -2147483648   | -1610612737
+ worker_1_host |    57637 | dist2        | -536870912    | -1
+ worker_1_host |    57637 | dist3        | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist3        | -2147483648   | -1610612737
+ worker_1_host |    57637 | dist3        | -536870912    | -1
+ worker_1_host |    57637 | dist4        | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist4        | -2147483648   | -1610612737
+ worker_1_host |    57637 | dist4        | -536870912    | -1
+ worker_2_host |    57638 | dist1        | 0             | 536870911
+ worker_2_host |    57638 | dist1        | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist1        | -1610612736   | -1073741825
+ worker_2_host |    57638 | dist2        | 0             | 536870911
+ worker_2_host |    57638 | dist2        | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist2        | -1610612736   | -1073741825
+ worker_2_host |    57638 | dist3        | 0             | 536870911
+ worker_2_host |    57638 | dist3        | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist3        | -1610612736   | -1073741825
+ worker_2_host |    57638 | dist4        | 0             | 536870911
+ worker_2_host |    57638 | dist4        | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist4        | -1610612736   | -1073741825
+ worker_3_host |    57639 | dist1        | -1073741824   | -536870913
+ worker_3_host |    57639 | dist1        | 536870912     | 1073741823
+ worker_3_host |    57639 | dist2        | -1073741824   | -536870913
+ worker_3_host |    57639 | dist2        | 536870912     | 1073741823
+ worker_3_host |    57639 | dist3        | -1073741824   | -536870913
+ worker_3_host |    57639 | dist3        | 536870912     | 1073741823
+ worker_3_host |    57639 | dist4        | -1073741824   | -536870913
+ worker_3_host |    57639 | dist4        | 536870912     | 1073741823
+(32 rows)
+
+--
+-- 2. 分片迁移
+--
+-- 迁移worker1的所有分片到worker3（worker迁移）
+select jobid from cigration_create_worker_migration_job(:'worker_1_host', :'worker_3_host') limit 1 \gset
+select cigration_batch_run_migration_tasks(:jobid);
+ cigration_batch_run_migration_tasks 
+-------------------------------------
+ t
+(1 row)
+
+select nodename,
+       nodeport,
+	   logicalrelid,
+	   shardminvalue,
+	   shardmaxvalue
+from pg_dist_shard_placement p
+     join pg_dist_shard s on(p.shardid = s.shardid)
+where logicalrelid::text ~ 'dist'
+order by nodename,nodeport,logicalrelid,shardminvalue;
+   nodename    | nodeport | logicalrelid | shardminvalue | shardmaxvalue 
+---------------+----------+--------------+---------------+---------------
+ worker_2_host |    57638 | dist1        | 0             | 536870911
+ worker_2_host |    57638 | dist1        | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist1        | -1610612736   | -1073741825
+ worker_2_host |    57638 | dist2        | 0             | 536870911
+ worker_2_host |    57638 | dist2        | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist2        | -1610612736   | -1073741825
+ worker_2_host |    57638 | dist3        | 0             | 536870911
+ worker_2_host |    57638 | dist3        | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist3        | -1610612736   | -1073741825
+ worker_2_host |    57638 | dist4        | 0             | 536870911
+ worker_2_host |    57638 | dist4        | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist4        | -1610612736   | -1073741825
+ worker_3_host |    57639 | dist1        | 1073741824    | 1610612735
+ worker_3_host |    57639 | dist1        | -1073741824   | -536870913
+ worker_3_host |    57639 | dist1        | -2147483648   | -1610612737
+ worker_3_host |    57639 | dist1        | 536870912     | 1073741823
+ worker_3_host |    57639 | dist1        | -536870912    | -1
+ worker_3_host |    57639 | dist2        | 1073741824    | 1610612735
+ worker_3_host |    57639 | dist2        | -1073741824   | -536870913
+ worker_3_host |    57639 | dist2        | -2147483648   | -1610612737
+ worker_3_host |    57639 | dist2        | 536870912     | 1073741823
+ worker_3_host |    57639 | dist2        | -536870912    | -1
+ worker_3_host |    57639 | dist3        | 1073741824    | 1610612735
+ worker_3_host |    57639 | dist3        | -1073741824   | -536870913
+ worker_3_host |    57639 | dist3        | -2147483648   | -1610612737
+ worker_3_host |    57639 | dist3        | 536870912     | 1073741823
+ worker_3_host |    57639 | dist3        | -536870912    | -1
+ worker_3_host |    57639 | dist4        | 1073741824    | 1610612735
+ worker_3_host |    57639 | dist4        | -1073741824   | -536870913
+ worker_3_host |    57639 | dist4        | -2147483648   | -1610612737
+ worker_3_host |    57639 | dist4        | 536870912     | 1073741823
+ worker_3_host |    57639 | dist4        | -536870912    | -1
+(32 rows)
+
+-- 检查分片迁移后SQL执行正常
+select count(*) from dist1 a left join dist2 b on(a.c1=b.c1) left join dist3 c on (a.c1=c.c1);
+ count  
+--------
+ 100000
+(1 row)
+
+select count(*) from dist4;
+ count  
+--------
+ 100000
+(1 row)
+
+-- 分片再平衡(扩容)
+select jobid from cigration_create_rebalance_job() limit 1 \gset
+select cigration_batch_run_migration_tasks(:jobid);
+ cigration_batch_run_migration_tasks 
+-------------------------------------
+ t
+(1 row)
+
+select nodename,
+       nodeport,
+	   logicalrelid,
+	   shardminvalue,
+	   shardmaxvalue
+from pg_dist_shard_placement p
+     join pg_dist_shard s on(p.shardid = s.shardid)
+where logicalrelid::text ~ 'dist'
+order by nodename,nodeport,logicalrelid,shardminvalue;
+   nodename    | nodeport | logicalrelid | shardminvalue | shardmaxvalue 
+---------------+----------+--------------+---------------+---------------
+ worker_1_host |    57637 | dist1        | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist1        | 536870912     | 1073741823
+ worker_1_host |    57637 | dist2        | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist2        | 536870912     | 1073741823
+ worker_1_host |    57637 | dist3        | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist3        | 536870912     | 1073741823
+ worker_1_host |    57637 | dist4        | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist4        | 536870912     | 1073741823
+ worker_2_host |    57638 | dist1        | 0             | 536870911
+ worker_2_host |    57638 | dist1        | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist1        | -1610612736   | -1073741825
+ worker_2_host |    57638 | dist2        | 0             | 536870911
+ worker_2_host |    57638 | dist2        | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist2        | -1610612736   | -1073741825
+ worker_2_host |    57638 | dist3        | 0             | 536870911
+ worker_2_host |    57638 | dist3        | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist3        | -1610612736   | -1073741825
+ worker_2_host |    57638 | dist4        | 0             | 536870911
+ worker_2_host |    57638 | dist4        | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist4        | -1610612736   | -1073741825
+ worker_3_host |    57639 | dist1        | -1073741824   | -536870913
+ worker_3_host |    57639 | dist1        | -2147483648   | -1610612737
+ worker_3_host |    57639 | dist1        | -536870912    | -1
+ worker_3_host |    57639 | dist2        | -1073741824   | -536870913
+ worker_3_host |    57639 | dist2        | -2147483648   | -1610612737
+ worker_3_host |    57639 | dist2        | -536870912    | -1
+ worker_3_host |    57639 | dist3        | -1073741824   | -536870913
+ worker_3_host |    57639 | dist3        | -2147483648   | -1610612737
+ worker_3_host |    57639 | dist3        | -536870912    | -1
+ worker_3_host |    57639 | dist4        | -1073741824   | -536870913
+ worker_3_host |    57639 | dist4        | -2147483648   | -1610612737
+ worker_3_host |    57639 | dist4        | -536870912    | -1
+(32 rows)
+
+-- 检查分片迁移后SQL执行正常
+select count(*) from dist1 a left join dist2 b on(a.c1=b.c1) left join dist3 c on (a.c1=c.c1);
+ count  
+--------
+ 100000
+(1 row)
+
+select count(*) from dist4;
+ count  
+--------
+ 100000
+(1 row)
+
+-- 从worker2和worker3迁移走所有分片（缩容）
+select jobid from cigration_create_del_node_job(array[:'worker_2_host',:'worker_3_host']) limit 1 \gset
+select cigration_batch_run_migration_tasks(:jobid);
+ cigration_batch_run_migration_tasks 
+-------------------------------------
+ t
+(1 row)
+
+select nodename,
+       nodeport,
+	   logicalrelid,
+	   shardminvalue,
+	   shardmaxvalue
+from pg_dist_shard_placement p
+     join pg_dist_shard s on(p.shardid = s.shardid)
+where logicalrelid::text ~ 'dist'
+order by nodename,nodeport,logicalrelid,shardminvalue;
+   nodename    | nodeport | logicalrelid | shardminvalue | shardmaxvalue 
+---------------+----------+--------------+---------------+---------------
+ worker_1_host |    57637 | dist1        | 0             | 536870911
+ worker_1_host |    57637 | dist1        | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist1        | -1073741824   | -536870913
+ worker_1_host |    57637 | dist1        | 1610612736    | 2147483647
+ worker_1_host |    57637 | dist1        | -1610612736   | -1073741825
+ worker_1_host |    57637 | dist1        | -2147483648   | -1610612737
+ worker_1_host |    57637 | dist1        | 536870912     | 1073741823
+ worker_1_host |    57637 | dist1        | -536870912    | -1
+ worker_1_host |    57637 | dist2        | 0             | 536870911
+ worker_1_host |    57637 | dist2        | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist2        | -1073741824   | -536870913
+ worker_1_host |    57637 | dist2        | 1610612736    | 2147483647
+ worker_1_host |    57637 | dist2        | -1610612736   | -1073741825
+ worker_1_host |    57637 | dist2        | -2147483648   | -1610612737
+ worker_1_host |    57637 | dist2        | 536870912     | 1073741823
+ worker_1_host |    57637 | dist2        | -536870912    | -1
+ worker_1_host |    57637 | dist3        | 0             | 536870911
+ worker_1_host |    57637 | dist3        | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist3        | -1073741824   | -536870913
+ worker_1_host |    57637 | dist3        | 1610612736    | 2147483647
+ worker_1_host |    57637 | dist3        | -1610612736   | -1073741825
+ worker_1_host |    57637 | dist3        | -2147483648   | -1610612737
+ worker_1_host |    57637 | dist3        | 536870912     | 1073741823
+ worker_1_host |    57637 | dist3        | -536870912    | -1
+ worker_1_host |    57637 | dist4        | 0             | 536870911
+ worker_1_host |    57637 | dist4        | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist4        | -1073741824   | -536870913
+ worker_1_host |    57637 | dist4        | 1610612736    | 2147483647
+ worker_1_host |    57637 | dist4        | -1610612736   | -1073741825
+ worker_1_host |    57637 | dist4        | -2147483648   | -1610612737
+ worker_1_host |    57637 | dist4        | 536870912     | 1073741823
+ worker_1_host |    57637 | dist4        | -536870912    | -1
+(32 rows)
+
+-- 检查分片迁移后SQL执行正常
+select count(*) from dist1 a left join dist2 b on(a.c1=b.c1) left join dist3 c on (a.c1=c.c1);
+ count  
+--------
+ 100000
+(1 row)
+
+select count(*) from dist4;
+ count  
+--------
+ 100000
+(1 row)
+
+-- 分片再平衡(扩容)
+select jobid from cigration_create_rebalance_job() limit 1 \gset
+select cigration_batch_run_migration_tasks(:jobid);
+ cigration_batch_run_migration_tasks 
+-------------------------------------
+ t
+(1 row)
+
+select nodename,
+       nodeport,
+	   logicalrelid,
+	   shardminvalue,
+	   shardmaxvalue
+from pg_dist_shard_placement p
+     join pg_dist_shard s on(p.shardid = s.shardid)
+where logicalrelid::text ~ 'dist'
+order by nodename,nodeport,logicalrelid,shardminvalue;
+   nodename    | nodeport | logicalrelid | shardminvalue | shardmaxvalue 
+---------------+----------+--------------+---------------+---------------
+ worker_1_host |    57637 | dist1        | -1073741824   | -536870913
+ worker_1_host |    57637 | dist1        | -1610612736   | -1073741825
+ worker_1_host |    57637 | dist1        | -2147483648   | -1610612737
+ worker_1_host |    57637 | dist2        | -1073741824   | -536870913
+ worker_1_host |    57637 | dist2        | -1610612736   | -1073741825
+ worker_1_host |    57637 | dist2        | -2147483648   | -1610612737
+ worker_1_host |    57637 | dist3        | -1073741824   | -536870913
+ worker_1_host |    57637 | dist3        | -1610612736   | -1073741825
+ worker_1_host |    57637 | dist3        | -2147483648   | -1610612737
+ worker_1_host |    57637 | dist4        | -1073741824   | -536870913
+ worker_1_host |    57637 | dist4        | -1610612736   | -1073741825
+ worker_1_host |    57637 | dist4        | -2147483648   | -1610612737
+ worker_2_host |    57638 | dist1        | 0             | 536870911
+ worker_2_host |    57638 | dist1        | 536870912     | 1073741823
+ worker_2_host |    57638 | dist1        | -536870912    | -1
+ worker_2_host |    57638 | dist2        | 0             | 536870911
+ worker_2_host |    57638 | dist2        | 536870912     | 1073741823
+ worker_2_host |    57638 | dist2        | -536870912    | -1
+ worker_2_host |    57638 | dist3        | 0             | 536870911
+ worker_2_host |    57638 | dist3        | 536870912     | 1073741823
+ worker_2_host |    57638 | dist3        | -536870912    | -1
+ worker_2_host |    57638 | dist4        | 0             | 536870911
+ worker_2_host |    57638 | dist4        | 536870912     | 1073741823
+ worker_2_host |    57638 | dist4        | -536870912    | -1
+ worker_3_host |    57639 | dist1        | 1073741824    | 1610612735
+ worker_3_host |    57639 | dist1        | 1610612736    | 2147483647
+ worker_3_host |    57639 | dist2        | 1073741824    | 1610612735
+ worker_3_host |    57639 | dist2        | 1610612736    | 2147483647
+ worker_3_host |    57639 | dist3        | 1073741824    | 1610612735
+ worker_3_host |    57639 | dist3        | 1610612736    | 2147483647
+ worker_3_host |    57639 | dist4        | 1073741824    | 1610612735
+ worker_3_host |    57639 | dist4        | 1610612736    | 2147483647
+(32 rows)
+
+-- 检查分片迁移后SQL执行正常
+select count(*) from dist1 a left join dist2 b on(a.c1=b.c1) left join dist3 c on (a.c1=c.c1);
+ count  
+--------
+ 100000
+(1 row)
+
+select count(*) from dist4;
+ count  
+--------
+ 100000
+(1 row)
+
+--
+-- 3. 旧分片清理
+--
+select nodename,nodeport,count(*)
+from cigration_get_recyclebin_metadata()
+group by nodename,nodeport
+order by nodename,nodeport;
+   nodename    | nodeport | count 
+---------------+----------+-------
+ worker_1_host |    57637 |     4
+ worker_2_host |    57638 |     4
+ worker_3_host |    57639 |     4
+(3 rows)
+
+select cigration_cleanup_recyclebin();
+ cigration_cleanup_recyclebin 
+------------------------------
+ 
+(1 row)
+
+select nodename,nodeport,count(*)
+from cigration_get_recyclebin_metadata()
+group by nodename,nodeport
+order by nodename,nodeport;
+ nodename | nodeport | count 
+----------+----------+-------
+(0 rows)
+
+--
+-- 4. 测试环境清理
+--
+-- 确认pg_citus_shard_migration中的记录为空
+select count(*) from pg_citus_shard_migration;
+ count 
+-------
+     0
+(1 row)
+
+truncate pg_citus_shard_migration_history;
+truncate pg_citus_shard_migration_sql_log;
