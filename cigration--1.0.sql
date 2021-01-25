@@ -1822,9 +1822,10 @@ RETURNS text
 --        check_only boolean 
 -- 返回值：complete：元数据切换完成(迁移任务完成)
 --         wait_init_data_sync：等待数据初始同步，重新执行本函数
+--         replication_broken: 增量数据同步阶段复制断开，修复错误后重新执行本函数
 --         wait_data_sync：等待增量数据同步，重新执行本函数
 --         lock_timeout: 锁超时退出，重新执行本函数
---         data_sync:数据已同步，但是未更新元数据（仅检查迁移状态时返回）
+--         data_sync: 数据已同步，但是未更新元数据（仅检查迁移状态时返回）
 -- 
 AS $complete_shard_migration_task$
 DECLARE
@@ -1923,13 +1924,22 @@ BEGIN
                 FROM dblink(dblink_source_name, $$select pg_current_wal_lsn()$$) AS t(sourcewallsn pg_lsn);
 
                 SELECT lag
-                INTO STRICT sub_lag
+                INTO sub_lag
                 FROM dblink(dblink_source_name, 
                                 format($$select pg_wal_lsn_diff('%s',replay_lsn)
                                          FROM pg_stat_replication
                                          WHERE application_name = 'citus_move_shard_placement_sub' AND replay_lsn is not NULL$$,
                                          source_wal_lsn::text)
                           ) AS t(lag numeric);
+
+                IF sub_lag is NULL THEN -- 复制断开
+                    -- 清理掉dblink后直接退出
+                    PERFORM dblink_disconnect(con)
+                    FROM (select unnest(a) con from dblink_get_connections() a)b 
+                    WHERE con in (dblink_source_name,dblink_target_name);
+
+                    RETURN 'replication_broken';
+                END IF;
 
                 -- debug info
                 raise debug 'WAL delay in incremental synchronization stage is % B,delay_threshold is % B.',sub_lag,delay_threshold;
@@ -1967,13 +1977,23 @@ BEGIN
                     FROM dblink(dblink_source_name, $$select pg_current_wal_lsn()$$) AS t(sourcewallsn pg_lsn);
                     loop
                         SELECT lag
-                        INTO STRICT sub_lag
+                        INTO sub_lag
                         FROM dblink(dblink_source_name, 
                                         format($$select pg_wal_lsn_diff('%s',replay_lsn)
                                                  FROM pg_stat_replication
                                                  WHERE application_name = 'citus_move_shard_placement_sub' AND replay_lsn is not NULL$$,
                                                  source_wal_lsn::text)
                                   ) AS t(lag numeric);
+
+                        IF sub_lag is NULL THEN -- 复制断开
+                            -- 清理掉dblink后直接退出
+                            PERFORM dblink_disconnect(con)
+                            FROM (select unnest(a) con from dblink_get_connections() a)b 
+                            WHERE con in (dblink_source_name,dblink_target_name);
+
+                            RETURN 'replication_broken';
+                        END IF;
+
                         raise debug 'WAL delay in incremental synchronization stage is % B, source_wal_lsn is %.', sub_lag, source_wal_lsn;
 
                         IF sub_lag <= 0 THEN
@@ -2350,6 +2370,8 @@ DECLARE
     logical_relid text;
     shard bigint;
     has_sub int;
+    var_subslotname text;
+    has_subslot boolean;
     
     -- dblink变量
     dblink_source_con_name text;
@@ -2403,6 +2425,21 @@ BEGIN
         
         if (has_sub <> 0) then
             PERFORM dblink_exec(dblink_target_con_name,'ALTER SUBSCRIPTION citus_move_shard_placement_sub DISABLE');
+
+            -- 目的端复制操不存在时，先将slot_name置为NONE，否则DROP SUBSCRIPTION会失败
+            SELECT subslotname
+            INTO var_subslotname
+            FROM dblink(dblink_target_con_name,'select subslotname from pg_subscription where subname = ''citus_move_shard_placement_sub'' ') a(subslotname text);
+
+            SELECT count > 0
+            INTO has_subslot
+            FROM dblink(dblink_source_con_name,
+                             format('select count(*) from pg_get_replication_slots() where slot_name=''%s'' ', var_subslotname)) a(count int);
+
+            IF NOT has_subslot THEN
+                PERFORM dblink_exec(dblink_target_con_name,'ALTER SUBSCRIPTION citus_move_shard_placement_sub SET (slot_name = NONE)');
+            END IF;
+
             PERFORM dblink_exec(dblink_target_con_name,'DROP SUBSCRIPTION IF EXISTS citus_move_shard_placement_sub CASCADE');
             execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_node, functionid, sql) values (%L, %L, %L, %L, %L)',
                     jobid_input, taskid_input, target_node_name, 'cigration.cigration_cancel_shard_migration_task',
@@ -3314,9 +3351,9 @@ BEGIN
 
     if (jobid_input is null) then
         for recordinfo in select distinct split_part(schema_name,'_',3)::int jobid
-		                  from cigration.cigration_get_recyclebin_metadata()
+                          from cigration.cigration_get_recyclebin_metadata()
                           where split_part(schema_name,'_',3)::int not in (SELECT DISTINCT(jobid) from cigration.pg_citus_shard_migration)
-						  ORDER BY split_part(schema_name,'_',3)::int loop
+                          ORDER BY split_part(schema_name,'_',3)::int loop
             execute_sql := format('select run_command_on_workers(''DROP SCHEMA IF EXISTS cigration_recyclebin_%s CASCADE'')', recordinfo.jobid);
             EXECUTE execute_sql;
         end loop;
