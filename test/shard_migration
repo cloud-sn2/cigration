@@ -2,3 +2,4 @@ test: init
 test: basic
 test: single_task_execute
 test: replica_identity_check
+test: empty_table

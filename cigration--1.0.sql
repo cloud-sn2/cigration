@@ -3558,9 +3558,15 @@ BEGIN
             completed_task_cnt := completed_task_cnt + 1;
             completed_task_size := completed_task_size + recordinfo.total_shard_size;
             SELECT pg_size_pretty(canceled_task_size + completed_task_size) INTO pg_size_pretty_processed;
+--            raise notice '% [%/%] migration task % completed. (processed/total/percent: %/%/% %%)', 
+--                    clock_timestamp(), canceled_task_cnt+completed_task_cnt, task_total_cnt, recordinfo.taskid, 
+--                    pg_size_pretty_processed, pg_size_pretty_total, ((canceled_task_size + completed_task_size)*100)/task_total_size;
+
             raise notice '% [%/%] migration task % completed. (processed/total/percent: %/%/% %%)', 
                     clock_timestamp(), canceled_task_cnt+completed_task_cnt, task_total_cnt, recordinfo.taskid, 
-                    pg_size_pretty_processed, pg_size_pretty_total, ((canceled_task_size + completed_task_size)*100)/task_total_size;
+                    pg_size_pretty_processed, pg_size_pretty_total,
+                    CASE task_total_size WHEN 0 THEN 100 ELSE ((canceled_task_size + completed_task_size)*100)/task_total_size END;
+
 
         EXCEPTION WHEN QUERY_CANCELED or OTHERS THEN
             IF dblink_created THEN
