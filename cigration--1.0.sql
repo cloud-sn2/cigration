@@ -180,13 +180,11 @@ AS $create_distributed_table$
     END;
 $create_distributed_table$ LANGUAGE plpgsql SET search_path = 'pg_catalog','public';
 
+-- 在指定worker节点集合上创建hash分片表（colocate_with固定为'none'）
 CREATE OR REPLACE FUNCTION cigration.cigration_create_distributed_table(table_name regclass,
                         distribution_column text,
-                        distribution_type citus.distribution_type,
-                        colocate_with text,
-                        target_workers_for_shards_assignment cigration.target_workers_for_shards_assignment,
-                        nodenames text[] DEFAULT NULL,
-                        nodeports integer[] DEFAULT NULL
+                        nodenames text[],
+                        nodeports integer[]
                         )
 RETURNS void
 AS $cigration_create_distributed_table$
@@ -212,94 +210,60 @@ AS $cigration_create_distributed_table$
         IF (SELECT CASE WHEN (select count(*) from pg_dist_node)>0 THEN (select groupid from pg_dist_local_group) ELSE -1 END) <> 0 THEN
             RAISE 'Function cigration.cigration_create_distributed_table could only be executed on coordinate node';
         END IF;
-        
-    -- add check for shard migration
-        if (select count(*) <> 0 from cigration.pg_citus_shard_migration where status <> 'completed') then
-            RAISE 'create distributed table is forbidden during the shard migration.';
-        end if;
 
-    --check colocate_with and target_workers_for_shards_assignment
-        IF colocate_with = 'default' THEN
-            RAISE 'Parameter colocate_with could only be specified to table name or none';
-        END IF;
-
-        IF colocate_with <> 'none' OR target_workers_for_shards_assignment = 'all' THEN
-            RAISE DEBUG 'create distributed table:colocate_with(%) target_workers_for_shards_assignment(%)',
-                            colocate_with, target_workers_for_shards_assignment;
-            EXECUTE format($$SELECT pg_catalog.create_distributed_table('%s','%s','%s','%s')$$,
-                            table_name, distribution_column,
-                            distribution_type, colocate_with);
-
-            RETURN ;
-        END IF;
-
-    --check distribution_type is not 'hash' and target_workers_for_shards_assignment is not 'all'?
-        IF distribution_type <> 'hash' THEN
-            RAISE  $$When parameter target_workers_for_shards_assignment has not been specified to 'all', parameter distribution_type can only be specified to 'hash'$$;
-        END IF;
+    --check citus.shard_replication_factor
+	    IF (select setting from pg_settings where name='citus.shard_replication_factor') <> '1' THEN
+			RAISE 'citus.shard_replication_factor must be 1';
+		END IF;
 
     --get source nodes/ports and target nodes/ports
-        RAISE DEBUG 'create distributed table:target_workers_for_shards_assignment(%)',
-                        target_workers_for_shards_assignment;
-        IF target_workers_for_shards_assignment = 'nometadata' THEN
-            --fetch worker which has metadata
-            SELECT  count(*), array_agg(nodename), array_agg(nodeport)
-            INTO    STRICT source_node_count, source_nodenames, source_nodeports
-            FROM    pg_dist_node
-            WHERE   shouldhaveshards='f' AND isactive='t' AND noderole='primary';
+		--check nodenames or nodeports is NULL?
+		IF nodenames IS NULL OR nodeports IS NULL THEN
+			RAISE  $$nodenames OR nodeports can not be null$$;
+		END IF;
 
-            --fetch worker which has not metadata
-            SELECT  count(*), array_agg(nodename), array_agg(nodeport)
-            INTO    STRICT target_node_count, target_nodenames, target_nodeports
-            FROM    pg_dist_node
-            WHERE   shouldhaveshards='t' AND isactive='t' AND noderole='primary';
-        ELSIF target_workers_for_shards_assignment = 'specified' THEN
-            --check nodenames or nodeports is NULL?
-            IF nodenames IS NULL OR nodeports IS NULL THEN
-                RAISE  $$nodenames OR nodeports can not be null when target_workers_for_shards_assignment = 'specified' $$;
-            END IF;
+		--check nodenames and nodeports length is corract?
+		IF array_length(nodenames, 1) < 1 OR array_length(nodenames, 1) <> array_length(nodeports, 1) THEN
+			RAISE  'The length of nodenames or nodeports is invalid';
+		END IF;
 
-            --check nodenames and nodeports length is corract?
-            IF array_length(nodenames, 1) <> array_length(nodeports, 1) THEN
-                RAISE  'The length of nodenames or nodeports is invalid';
-            END IF;
+		--check nodenames and nodeports is in pg_dist_node?
+		FOR itmp IN 1..array_length(nodenames, 1) LOOP
+			SELECT  count(*) 
+			INTO    jtmp 
+			FROM    pg_dist_node
+			WHERE   nodename=nodenames[itmp] AND
+					nodeport=nodeports[itmp] AND
+					shouldhaveshards='t'     AND
+					isactive='t'             AND
+					noderole = 'primary';
 
-            --check nodenames and nodeports is in pg_dist_node?
-            FOR itmp IN 1..array_length(nodenames, 1) LOOP
-                SELECT  count(*) 
-                INTO    jtmp 
-                FROM    pg_dist_node
-                WHERE   nodename=nodenames[itmp] AND
-                        nodeport=nodeports[itmp] AND
-                        isactive='t'             AND
-                        noderole = 'primary';
+			IF jtmp <> 1 THEN
+				RAISE  'Specified worker %:% is invalid.',
+						nodenames[itmp], nodeports[itmp];
+			END IF;
+		END LOOP;
 
-                IF jtmp <> 1 THEN
-                    RAISE  'Specified worker[nodename=% nodeport=%] is not in workers group.',
-                            nodenames[itmp], nodeports[itmp];
-                END IF;
-            END LOOP;
-
-            --Returned the workers which have not been specified
-            SELECT  count(*), array_agg(nodename), array_agg(nodeport)
-            INTO    STRICT source_node_count, source_nodenames, source_nodeports
-            FROM    pg_dist_node
-            WHERE   isactive='t'       AND 
-                    noderole='primary' AND
-                    (nodename, nodeport) NOT IN (SELECT * FROM unnest(nodenames, nodeports));
-            
-            target_nodenames  := nodenames;
-            target_nodeports  := nodeports;
-            target_node_count := array_length(nodenames, 1);
-        END IF;
+		--Returned the workers which have not been specified
+		SELECT  count(*), array_agg(nodename), array_agg(nodeport)
+		INTO    STRICT source_node_count, source_nodenames, source_nodeports
+		FROM    pg_dist_node
+		WHERE   shouldhaveshards='t' AND
+		        isactive='t'         AND 
+				noderole='primary'   AND
+				(nodename, nodeport) NOT IN (SELECT * FROM unnest(nodenames, nodeports));
+		
+		target_nodenames  := nodenames;
+		target_nodeports  := nodeports;
+		target_node_count := array_length(nodenames, 1);
 
     --check target node/port is not null?
         IF target_node_count = 0 THEN
-            RAISE $$when parameter target_workers_for_shards_assignment has not been specified to 'all', there are no workers that the distributed table can be created.Please make sure that where the distributed table can be created$$;
+            RAISE $$there are no workers that the distributed table can be created.$$;
         END IF;
             
-        RAISE DEBUG 'create distributed table:table_name(%) distribution_column(%) distribution_type(%) colocate_with(%)',
-                        table_name, distribution_column, distribution_type, colocate_with;
+        RAISE DEBUG 'create distributed table:table_name(%) distribution_column(%)',
+                        table_name, distribution_column;
 
         --get the current node port
         SELECT setting INTO icurrentnode_port FROM pg_settings where name='port';
@@ -322,7 +286,7 @@ AS $cigration_create_distributed_table$
             EXECUTE format($AAA$SELECT * FROM dblink('citus_create_distributed_table_con', 
                                                      $$SELECT pg_catalog.create_distributed_table('%s', '%s', '%s', '%s')$$
                                                     ) AS t(result_record text) $AAA$,
-                           table_name, distribution_column, distribution_type,colocate_with);
+                           table_name, distribution_column, 'hash','none');
 
             --all workers without metadata
             IF source_node_count = 0 THEN
@@ -339,9 +303,7 @@ AS $cigration_create_distributed_table$
                 FROM    pg_dist_placement
                 WHERE   groupid IN
                             (SELECT groupid FROM pg_dist_node WHERE nodename= source_nodenames[itmp] AND
-                                                                    nodeport= source_nodeports[itmp] AND
-                                                                    isactive= 't'                    AND
-                                                                    noderole = 'primary')
+                                                                    nodeport= source_nodeports[itmp])
                 AND     shardid IN
                             (SELECT shardid FROM pg_dist_shard WHERE logicalrelid=table_name);
 
@@ -403,14 +365,14 @@ AS $cigration_create_distributed_table$
     END;
 $cigration_create_distributed_table$ LANGUAGE plpgsql SET search_path = 'cigration','public';
 
+-- 创建分片表函数，接口和create_distributed_table()完全兼容
 CREATE OR REPLACE FUNCTION cigration.cigration_create_distributed_table(table_name regclass,
                         distribution_column text,
-                        colocate_with text
+						distribution_type citus.distribution_type DEFAULT 'hash',
+                        colocate_with text DEFAULT 'default'
                         )
 RETURNS void
 AS $cigration_create_distributed_table$
-    DECLARE
-        shouldhaveshards_count integer;
     BEGIN
         RAISE DEBUG 'BEGIN create distributed table:%(%)', table_name, distribution_column;
 
@@ -420,33 +382,19 @@ AS $cigration_create_distributed_table$
         END IF;
 
     -- add check for shard migration
-        if (select count(*) <> 0 from cigration.pg_citus_shard_migration where status <> 'completed') then
-            RAISE 'create distributed table is forbidden during the shard migration.';
-        end if;
-
-    --check colocate_with
-        IF colocate_with = 'default' THEN
-            RAISE 'Parameter colocate_with could only be specified to table name or none';
-        END IF;
-
-    --fetch worker which has shouldhaveshards
-        SELECT  count(*)
-        INTO    STRICT shouldhaveshards_count
-        FROM    pg_dist_node
-        WHERE   shouldhaveshards='t' AND isactive='t' AND noderole='primary';
-
-    --check shouldhaveshards count
-        IF shouldhaveshards_count = 0 THEN
-            RAISE 'The metadata of column shouldhaveshards is wrong in table pg_dist_node';
-        END IF;
+	    IF distribution_type = 'hash' AND colocate_with <> 'none' THEN
+		    IF (select count(*) <> 0 from cigration.pg_citus_shard_migration) THEN
+                RAISE 'create colocated hash distributed table is forbidden during the shard migration.'
+				      USING HINT = 'you could check cigration.pg_citus_shard_migration for existing shard migration tasks.';
+            END IF;
+		END IF;
         
     --创建分片表
         EXECUTE format($$SELECT pg_catalog.create_distributed_table('%s','%s','%s','%s')$$,
-                        table_name, distribution_column,
-                        'hash', colocate_with);
+                        table_name, distribution_column, distribution_type, colocate_with);
 
     END;
-$cigration_create_distributed_table$ LANGUAGE plpgsql SET search_path = 'cigration','public';
+$cigration_create_distributed_table$ LANGUAGE plpgsql;
 
 -- move shard to worker
 CREATE OR REPLACE FUNCTION cigration.cigration_create_distributed_table_move_shard_cleanup()
