@@ -1738,13 +1738,15 @@ $cigration_generate_migration_strategy$ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION cigration.cigration_start_shard_migration_task(jobid_input int,
                                                              taskid_input int, 
                                                              longtime_tx_threshold interval default '30 min',
-                                                             ignore_replica_identity_check boolean default false)
+                                                             with_replica_identity_check boolean default false)
 RETURNS text
 -- 
 -- 函数名：cigration.cigration_start_shard_migration_task
 -- 函数功能：启动单个task
--- 参数：jobid_input integer
---       taskid_input integer
+-- 参数：jobid_input integer,
+--       taskid_input integer,
+--       longtime_tx_threshold, 迁移任务时允许的最大长事务执行时间
+--       with_replica_identity_check 任务启动时是否检查replica_identity
 -- 返回值：返回任务的启动结果，init_succeed：启动成功，如果有异常，直接抛出exception
 -- 
 AS $cigration_start_shard_migration_task$
@@ -1773,7 +1775,7 @@ BEGIN
     end if;
     
     -- 调用分片迁移函数，根据函数返回值判断最终的返回值
-    select cigration.cigration_citus_move_shard_placement(jobid_input,taskid_input,longtime_tx_threshold,ignore_replica_identity_check) into strict shardmove_func_result;
+    select cigration.cigration_citus_move_shard_placement(jobid_input,taskid_input,longtime_tx_threshold,with_replica_identity_check) into strict shardmove_func_result;
     
     if (shardmove_func_result) then
         update cigration.pg_citus_shard_migration set status = 'running',start_time = now() where taskid = taskid_input and jobid = jobid_input;
@@ -2774,16 +2776,16 @@ $cigration_shard_migration_env_cleanup$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION cigration.cigration_check_before_migration(jobid_input integer,
                                                          taskid_input integer,
-                                                         xact_time_threshold interval,
-                                                         ignore_replica_identity_check boolean)
+                                                         longtime_tx_threshold interval,
+                                                         with_replica_identity_check boolean)
 RETURNS text
 -- 
 -- 函数名：cigration.check_before_migration
 -- 函数功能：开始分片迁移之前的检查函数
 -- 参数：jobid_input integer,
 --       taskid_input integer,
---       xact_time_threshold interval,
---       ignore_replica_identity_check boolean
+--       longtime_tx_threshold interval, 迁移任务时允许的最大长事务执行时间
+--       with_replica_identity_check boolean 任务启动时是否检查replica_identity
 -- 返回值：true/false 
 --  
 AS $cigration_check_before_migration$
@@ -2814,8 +2816,8 @@ BEGIN
     where taskid = taskid_input and jobid = jobid_input;
     
     -- 检查长事务，存在超过阈值的事务就报错退出
-    if (select count(*) > 0 from pg_stat_activity where backend_type = 'client backend' and now() - xact_start >= xact_time_threshold and query !~ 'cigration.cigration_batch_run_migration_tasks' and query !~ 'cigration.cigration_complete_shard_migration_task') then
-        result := 'there are some transactions executed over ' || xact_time_threshold || '.';
+    if (select count(*) > 0 from pg_stat_activity where backend_type = 'client backend' and now() - xact_start >= longtime_tx_threshold and query !~ 'cigration.cigration_batch_run_migration_tasks' and query !~ 'cigration.cigration_complete_shard_migration_task') then
+        result := 'there are some transactions executed over ' || longtime_tx_threshold || '.';
     end if;
     
     -- 检查该分片上有没有主键和唯一约束，需要排除分区主表
@@ -2825,7 +2827,7 @@ BEGIN
     where shardid = any(shard_id_array) and 
           logicalrelid not in (select inhparent from pg_inherits);
     
-    if (ignore_replica_identity_check is false) then
+    if (with_replica_identity_check is true) then
         foreach shard_id in array shard_id_array_without_partition
         loop
             if not (select relhasindex from pg_class where oid = (select logicalrelid from pg_dist_shard where shardid = shard_id)) then
@@ -2877,7 +2879,7 @@ $cigration_check_before_migration$ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION cigration.cigration_citus_move_shard_placement(jobid_input integer,
                                                              taskid_input integer,
                                                              longtime_tx_threshold interval,
-                                                             ignore_replica_identity_check boolean)
+                                                             with_replica_identity_check boolean)
 RETURNS boolean
 --  
 -- 函数名：cigration.cigration_citus_move_shard_placement
@@ -2934,7 +2936,7 @@ BEGIN
     select setting into strict default_port from pg_settings where name = 'port';
     
     -- 迁移前的检查
-    select cigration.cigration_check_before_migration(jobid_input,taskid_input,longtime_tx_threshold,ignore_replica_identity_check) into strict check_result;
+    select cigration.cigration_check_before_migration(jobid_input,taskid_input,longtime_tx_threshold,with_replica_identity_check) into strict check_result;
     if (check_result <> '') then
         -- debug info
         raise debug 'check_result:%',check_result;
@@ -3441,15 +3443,20 @@ BEGIN
 END;
 $cigration_generate_parallel_schedule$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION cigration.cigration_batch_run_migration_tasks(jobid_input int, taskids int[] default NULL, init_sync_timeout int default 7200)
+CREATE OR REPLACE FUNCTION cigration.cigration_batch_run_migration_tasks(jobid_input int, taskids int[] default NULL,
+                                                                         init_sync_timeout int default 7200,
+                                                                         longtime_tx_threshold interval default '30 min',
+                                                                         with_replica_identity_check boolean default false)
 RETURNS boolean
 -- 
 -- 函数名：cigration.cigration_batch_run_migration_tasks
 -- 函数功能：对指定的jobid及taskid执行迁移任务
 -- 参数：
---      jobid_input       : jobid信息
---      taskids           : 待迁移的task列表
---      init_sync_timeout : 最大同步等待时间
+--      jobid_input                 : jobid信息
+--      taskids                     : 待迁移的task列表
+--      init_sync_timeout           : 最大同步等待时间
+--      longtime_tx_threshold       : 迁移任务时允许的最大长事务执行时间
+--      with_replica_identity_check : 任务启动时是否检查replica_identity
 -- 返回值：无
 -- 
 AS $cigration_batch_run_migration_tasks$
@@ -3522,9 +3529,9 @@ BEGIN
             IF recordinfo.status = 'init' THEN
                 --start migration
                 EXECUTE format($$SELECT * FROM dblink('cigration_batch_run_migration_tasks', 
-                                                      'SELECT cigration.cigration_start_shard_migration_task(%s, %s)'
+                                                      $sql$SELECT cigration.cigration_start_shard_migration_task(%s, %s, longtime_tx_threshold=>'%s', with_replica_identity_check=>'%s')$sql$
                                                       ) AS t(result_record text)$$,
-                                jobid_input, recordinfo.taskid);
+                                jobid_input, recordinfo.taskid, longtime_tx_threshold, with_replica_identity_check);
 
             END IF;
 
