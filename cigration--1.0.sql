@@ -2,14 +2,6 @@
 DROP SCHEMA IF EXISTS cigration CASCADE;
 CREATE SCHEMA cigration;
 
--- citus migration type
-DROP TYPE IF EXISTS cigration.target_workers_for_shards_assignment CASCADE;
-CREATE TYPE cigration.target_workers_for_shards_assignment AS ENUM (
-   'all', -- create shards on all workers
-   'nometadata', -- create shards on all workers without meta data
-   'specified' -- create shards on specified workers
-);
-
 DROP TYPE IF EXISTS cigration.old_shard_placement_drop_method CASCADE;
 CREATE TYPE cigration.old_shard_placement_drop_method AS ENUM (
    'none', -- do not drop or rename old shards, only record it into cigration.citus_move_shard_placement_remained_old_shard
@@ -202,7 +194,6 @@ AS $cigration_create_distributed_table$
         icurrentnode_port integer;
         error_msg text;
         iarraytmp integer :=1;
-        dblink_created boolean := false;
     BEGIN
         RAISE DEBUG 'BEGIN create distributed table:%(%)', table_name, distribution_column;
 
@@ -212,50 +203,50 @@ AS $cigration_create_distributed_table$
         END IF;
 
     --check citus.shard_replication_factor
-	    IF (select setting from pg_settings where name='citus.shard_replication_factor') <> '1' THEN
-			RAISE 'citus.shard_replication_factor must be 1';
-		END IF;
+        IF (select setting from pg_settings where name='citus.shard_replication_factor') <> '1' THEN
+            RAISE 'citus.shard_replication_factor must be 1';
+        END IF;
 
     --get source nodes/ports and target nodes/ports
-		--check nodenames or nodeports is NULL?
-		IF nodenames IS NULL OR nodeports IS NULL THEN
-			RAISE  $$nodenames OR nodeports can not be null$$;
-		END IF;
+        --check nodenames or nodeports is NULL?
+        IF nodenames IS NULL OR nodeports IS NULL THEN
+            RAISE  $$nodenames OR nodeports can not be null$$;
+        END IF;
 
-		--check nodenames and nodeports length is corract?
-		IF array_length(nodenames, 1) < 1 OR array_length(nodenames, 1) <> array_length(nodeports, 1) THEN
-			RAISE  'The length of nodenames or nodeports is invalid';
-		END IF;
+        --check nodenames and nodeports length is corract?
+        IF array_length(nodenames, 1) < 1 OR array_length(nodenames, 1) <> array_length(nodeports, 1) THEN
+            RAISE  'The length of nodenames or nodeports is invalid';
+        END IF;
 
-		--check nodenames and nodeports is in pg_dist_node?
-		FOR itmp IN 1..array_length(nodenames, 1) LOOP
-			SELECT  count(*) 
-			INTO    jtmp 
-			FROM    pg_dist_node
-			WHERE   nodename=nodenames[itmp] AND
-					nodeport=nodeports[itmp] AND
-					shouldhaveshards='t'     AND
-					isactive='t'             AND
-					noderole = 'primary';
+        --check nodenames and nodeports is in pg_dist_node?
+        FOR itmp IN 1..array_length(nodenames, 1) LOOP
+            SELECT  count(*) 
+            INTO    jtmp 
+            FROM    pg_dist_node
+            WHERE   nodename=nodenames[itmp] AND
+                    nodeport=nodeports[itmp] AND
+                    shouldhaveshards='t'     AND
+                    isactive='t'             AND
+                    noderole = 'primary';
 
-			IF jtmp <> 1 THEN
-				RAISE  'Specified worker %:% is invalid.',
-						nodenames[itmp], nodeports[itmp];
-			END IF;
-		END LOOP;
+            IF jtmp <> 1 THEN
+                RAISE  'Specified worker %:% is invalid.',
+                        nodenames[itmp], nodeports[itmp];
+            END IF;
+        END LOOP;
 
-		--Returned the workers which have not been specified
-		SELECT  count(*), array_agg(nodename), array_agg(nodeport)
-		INTO    STRICT source_node_count, source_nodenames, source_nodeports
-		FROM    pg_dist_node
-		WHERE   shouldhaveshards='t' AND
-		        isactive='t'         AND 
-				noderole='primary'   AND
-				(nodename, nodeport) NOT IN (SELECT * FROM unnest(nodenames, nodeports));
-		
-		target_nodenames  := nodenames;
-		target_nodeports  := nodeports;
-		target_node_count := array_length(nodenames, 1);
+        --Returned the workers which have not been specified
+        SELECT  count(*), array_agg(nodename), array_agg(nodeport)
+        INTO    STRICT source_node_count, source_nodenames, source_nodeports
+        FROM    pg_dist_node
+        WHERE   shouldhaveshards='t' AND
+                isactive='t'         AND 
+                noderole='primary'   AND
+                (nodename, nodeport) NOT IN (SELECT * FROM unnest(nodenames, nodeports));
+        
+        target_nodenames  := nodenames;
+        target_nodeports  := nodeports;
+        target_node_count := array_length(nodenames, 1);
 
     --check target node/port is not null?
         IF target_node_count = 0 THEN
@@ -279,14 +270,21 @@ AS $cigration_create_distributed_table$
                                         icurrentnode_port,
                                         current_user,
                                         current_database()));
-        dblink_created := true;
+
+        BEGIN
+    --set shard_count and shard_replication_factor in dblink connection
+            PERFORM * FROM dblink('citus_create_distributed_table_con', 
+                                  format($$SET search_path = %s;SET citus.shard_count = %s;SET citus.shard_replication_factor = %s;$$,
+                                         (SELECT setting FROM pg_settings where name='search_path'),
+                                         (SELECT setting FROM pg_settings where name='citus.shard_count'),
+                                         (SELECT setting FROM pg_settings where name='citus.shard_replication_factor'))
+                                 ) AS t(result_record text);
 
     --create distribute table on all workers
-        BEGIN
-            EXECUTE format($AAA$SELECT * FROM dblink('citus_create_distributed_table_con', 
-                                                     $$SELECT pg_catalog.create_distributed_table('%s', '%s', '%s', '%s')$$
-                                                    ) AS t(result_record text) $AAA$,
-                           table_name, distribution_column, 'hash','none');
+            PERFORM * FROM dblink('citus_create_distributed_table_con',
+                                  format($$SELECT pg_catalog.create_distributed_table('%s', '%s', '%s', '%s')$$,
+                                         table_name, distribution_column, 'hash','none')
+                                 ) AS t(result_record text);
 
             --all workers without metadata
             IF source_node_count = 0 THEN
@@ -340,15 +338,13 @@ AS $cigration_create_distributed_table$
                 END LOOP;
             END LOOP;
         EXCEPTION WHEN QUERY_CANCELED or OTHERS THEN
-            IF dblink_created THEN
-                BEGIN
-                    PERFORM dblink_disconnect('citus_create_distributed_table_con');
+            BEGIN
+                PERFORM dblink_disconnect('citus_create_distributed_table_con');
 
-                EXCEPTION WHEN QUERY_CANCELED or OTHERS THEN
-                    GET STACKED DIAGNOSTICS error_msg = MESSAGE_TEXT;
-                    RAISE WARNING 'failed to call dblink_disconnect:%', error_msg;
-                END;
-            END IF;
+            EXCEPTION WHEN QUERY_CANCELED or OTHERS THEN
+                GET STACKED DIAGNOSTICS error_msg = MESSAGE_TEXT;
+                RAISE WARNING 'failed to call dblink_disconnect:%', error_msg;
+            END;
 
             RAISE;
         END;
@@ -366,33 +362,86 @@ AS $cigration_create_distributed_table$
 $cigration_create_distributed_table$ LANGUAGE plpgsql SET search_path = 'cigration','public';
 
 -- 创建分片表函数，接口和create_distributed_table()完全兼容
+-- 为确保colocate_with指向的表名被正确解析，cigration_create_distributed_table()函数内部的search_path需要和会话保持一致
 CREATE OR REPLACE FUNCTION cigration.cigration_create_distributed_table(table_name regclass,
                         distribution_column text,
-						distribution_type citus.distribution_type DEFAULT 'hash',
+                        distribution_type citus.distribution_type DEFAULT 'hash',
                         colocate_with text DEFAULT 'default'
                         )
 RETURNS void
 AS $cigration_create_distributed_table$
+    DECLARE
+    icurrentnode_port integer;
+    table_identity text;
+    error_msg text;
     BEGIN
         RAISE DEBUG 'BEGIN create distributed table:%(%)', table_name, distribution_column;
 
-    --check current node is cn?
+    -- check current node is cn?
         IF (SELECT CASE WHEN (select count(*) from pg_dist_node)>0 THEN (select groupid from pg_dist_local_group) ELSE -1 END) <> 0 THEN
             RAISE 'Function cigration.cigration_create_distributed_table could only be executed on coordinate node';
         END IF;
 
     -- add check for shard migration
-	    IF distribution_type = 'hash' AND colocate_with <> 'none' THEN
-		    IF (select count(*) <> 0 from cigration.pg_citus_shard_migration) THEN
+        IF distribution_type = 'hash' THEN
+            IF (select count(*) <> 0 from cigration.pg_citus_shard_migration) THEN
                 RAISE 'create colocated hash distributed table is forbidden during the shard migration.'
-				      USING HINT = 'you could check cigration.pg_citus_shard_migration for existing shard migration tasks.';
+                      USING HINT = 'you could check cigration.pg_citus_shard_migration for existing shard migration tasks.';
             END IF;
-		END IF;
-        
-    --创建分片表
-        EXECUTE format($$SELECT pg_catalog.create_distributed_table('%s','%s','%s','%s')$$,
-                        table_name, distribution_column, distribution_type, colocate_with);
+        END IF;
 
+    -- get the current node port
+        SELECT setting INTO icurrentnode_port FROM pg_settings where name='port';
+
+    --在事务块(包括函数，多SQL语句)中调用create_distributed_table()时，如果表名长度大于55字节，会触发分布式死锁。
+    --因此通过dblink调用create_distributed_table()，回避这个问题。
+    --create dblink connection
+        PERFORM dblink_disconnect(con) 
+        FROM (select unnest(a) con from dblink_get_connections() a)b 
+        WHERE con = 'citus_create_distributed_table_con';
+
+        PERFORM dblink_connect('citus_create_distributed_table_con',
+                                format('host=%s port=%s user=%s dbname=%s',
+                                        '127.0.0.1',
+                                        icurrentnode_port,
+                                        current_user,
+                                        current_database()));
+
+        BEGIN
+    -- set shard_count and shard_replication_factor in dblink connection
+            PERFORM * FROM dblink('citus_create_distributed_table_con', 
+                                  format($$SET search_path = %s;SET citus.shard_count = %s;SET citus.shard_replication_factor = %s;$$,
+                                         (SELECT setting FROM pg_settings where name='search_path'),
+                                         (SELECT setting FROM pg_settings where name='citus.shard_count'),
+                                         (SELECT setting FROM pg_settings where name='citus.shard_replication_factor'))
+                                 ) AS t(result_record text);
+
+    -- create distribute table
+            PERFORM * FROM dblink('citus_create_distributed_table_con',
+                                  format($$SELECT pg_catalog.create_distributed_table('%s', '%s', '%s', '%s')$$,
+                                         table_name, distribution_column, distribution_type, colocate_with)
+                                 ) AS t(result_record text);
+
+        EXCEPTION WHEN QUERY_CANCELED or OTHERS THEN
+            BEGIN
+                PERFORM dblink_disconnect('citus_create_distributed_table_con');
+
+            EXCEPTION WHEN QUERY_CANCELED or OTHERS THEN
+                GET STACKED DIAGNOSTICS error_msg = MESSAGE_TEXT;
+                RAISE WARNING 'failed to call dblink_disconnect:%', error_msg;
+            END;
+
+            RAISE;
+        END;
+
+    --cleanup
+        BEGIN
+            PERFORM dblink_disconnect('citus_create_distributed_table_con');
+
+        EXCEPTION WHEN QUERY_CANCELED or OTHERS THEN
+            GET STACKED DIAGNOSTICS error_msg = MESSAGE_TEXT;
+            RAISE WARNING 'failed to call dblink_disconnect:%', error_msg;
+        END;
     END;
 $cigration_create_distributed_table$ LANGUAGE plpgsql;
 
@@ -756,12 +805,12 @@ AS $citus_move_shard_placement$
 
     -- create shard table in the target node
             RAISE  NOTICE  'create shard table in the target node %:%', target_node_name, target_node_port;
-            EXECUTE format($$COPY (select '') to PROGRAM 'pg_dump "host=%s port=%s user=%s dbname=%s" -s -t %s | psql "host=%s port=%s user=%s dbname=%s"'$$,
+            EXECUTE format($sql$COPY (select '') to PROGRAM $$pg_dump "host=%s port=%s user=%s dbname=%s" -s -t %s | psql "host=%s port=%s user=%s dbname=%s"$$ $sql$,
                             source_node_name,
                             i_source_node_port,
                             current_user,
                             current_database(),
-                            (select string_agg(table_name,' -t ') from unnest(shard_fulltablename_array) table_name),
+                            (select string_agg(format($a$'%s'$a$,table_name),' -t ') from unnest(shard_fulltablename_array) table_name),
                             target_node_name,
                             i_target_node_port,
                             current_user,
@@ -771,8 +820,8 @@ AS $citus_move_shard_placement$
             INTO   target_shard_tables_with_data
             FROM   dblink('citus_move_shard_placement_target_con',
                             format($$ select string_agg(table_name,',') table_name from ((select tableoid::regclass::text table_name from %s limit 1))a $$,
-                                    (select string_agg(table_name,' limit 1) UNION all (select tableoid::regclass::text table_name from ') 
-                                            from unnest(shard_fulltablename_array) table_name))
+                                   (select string_agg(table_name,' limit 1) UNION all (select tableoid::regclass::text table_name from ') 
+                                           from unnest(shard_fulltablename_array) table_name))
                     ) as a(table_name text);
 
             IF target_shard_tables_with_data is not NULL THEN
@@ -914,7 +963,7 @@ AS $citus_move_shard_placement$
                     RAISE  NOTICE  '[%/%]copy table[%] data from source[%:%] to target[%:%]...',
                                     i,colocated_table_count,shard_fulltablename_array[i],
                                     source_node_name,i_source_node_port,target_node_name,i_target_node_port;
-                    EXECUTE format($$COPY (select '') to PROGRAM 'psql "host=%s port=%s user=%s dbname=%s" -Atc "copy %s to stdout" | psql "host=%s port=%s user=%s dbname=%s" -Atc "copy %s from stdout"'$$,
+                    EXECUTE format($sql$COPY (select '') to PROGRAM $$psql "host=%s port=%s user=%s dbname=%s" -Atc 'copy %s to stdout' | psql "host=%s port=%s user=%s dbname=%s" -Atc 'copy %s from stdout'$$ $sql$,
                                     source_node_name,
                                     i_source_node_port,
                                     current_user,
@@ -1285,7 +1334,7 @@ BEGIN
     
     for shard_info_record in select logicalrelid,a.shardid,b.nodename,b.nodeport,b.shardstate from pg_dist_shard a,pg_dist_shard_placement b where a.shardid = b.shardid and a.shardid in (select unnest(shardid_list)) order by logicalrelid,a.shardid
     loop
-        fullrelname := cigration.cigration_get_fulltbname(shard_info_record.logicalrelid) || '_' || shard_info_record.shardid;
+        fullrelname := shard_name(shard_info_record.logicalrelid, shard_info_record.shardid);
         
         PERFORM dblink_connect(format('%s','get_shard_size_con_' || shard_info_record.shardid),format('host=%s port=%s user=%s dbname=%s',shard_info_record.nodename,shard_info_record.nodeport,current_user,current_database()));
         EXECUTE FORMAT($tmp$select * from dblink(%L,$sql$select pg_relation_size(%L)$sql$) as (tbsize bigint)$tmp$,'get_shard_size_con_' || shard_info_record.shardid,fullrelname) into shard_size;
@@ -1486,9 +1535,9 @@ RETURNS int
 AS $cigration_generate_migration_strategy$
 DECLARE
     logical_tb record;
-    parent_tbnames text[];
-    tbname_list_without_parenttb text[];
-    representative_shard text;
+    parent_tbnames regclass[];
+    tbname_list_without_parenttb regclass[];
+    representative_shard regclass;
     shard_count integer;
     
     upper_limit integer;
@@ -1526,17 +1575,17 @@ BEGIN
     loop
         -- debug info
         raise debug 'source_nodename_element:%',source_nodename_element;
-        for logical_tb in select array_agg(cigration.cigration_get_fulltbname(logicalrelid)) as tb_list,colocationid from pg_dist_partition where partmethod = 'h' group by colocationid
+        for logical_tb in select array_agg(logicalrelid) as tb_list,colocationid from pg_dist_partition where partmethod = 'h' group by colocationid
         loop
             -- 把分区主表筛选出来，如果有的话
             -- 分区主表不先筛选出来，后面选择亲和的分片时，每个分区都会和分区主表亲和一次，会冗余产生冲突
-            select array_agg(cigration.cigration_get_fulltbname(inhparent))
+            select array_agg(inhparent)
             into parent_tbnames
-            from pg_inherits where inhparent in (select unnest(logical_tb.tb_list)::regclass);
+            from pg_inherits where inhparent in (select unnest(logical_tb.tb_list));
             
             if (parent_tbnames is null) then
                 -- 选一个分片作为这组亲和表的代表
-                select unnest(logical_tb.tb_list) into strict representative_shard limit 1;
+                select logical_tb.tb_list[1] into strict representative_shard;
             else
                 -- 去掉分区主表之后的所有表
                 select array_agg(tmp)
@@ -1545,14 +1594,14 @@ BEGIN
                 where tmp not in (select unnest(parent_tbnames));
                 
                 -- 选一个分片作为这组亲和表的代表
-                select unnest(tbname_list_without_parenttb) into strict representative_shard limit 1;
+                select tbname_list_without_parenttb[1] into strict representative_shard;
             end if;
             
             -- 获取该组亲和表的分片数           
             select count(*)
             into strict shard_count
             from pg_dist_shard_placement
-            where nodename in (select unnest(source_nodenames || target_nodenames)) and shardid in (select shardid from pg_dist_shard where logicalrelid = representative_shard::regclass);
+            where nodename in (select unnest(source_nodenames || target_nodenames)) and shardid in (select shardid from pg_dist_shard where logicalrelid = representative_shard);
             
             -- debug info
             raise debug 'tb:% has % shard in node %',representative_shard,shard_count,source_nodenames || target_nodenames;
@@ -1574,7 +1623,7 @@ BEGIN
             -- 满足这个条件的即为均衡状态：分片数/worker集群数 <= worker上的分片数 <= (分片数+worker集群数-1)/worker集群数
             -- 选出所有的需要从源迁走的分片
             with ordered_shardid as
-            (select a.shardid from pg_dist_shard_placement a,pg_dist_shard b where a.shardid = b.shardid and b.logicalrelid = representative_shard::regclass and a.nodename = source_nodename_element order by a.shardid offset upper_limit)
+            (select a.shardid from pg_dist_shard_placement a,pg_dist_shard b where a.shardid = b.shardid and b.logicalrelid = representative_shard and a.nodename = source_nodename_element order by a.shardid offset upper_limit)
             select array_agg(shardid) into shard_to_move from ordered_shardid;
             
             if (shard_to_move is not null) then
@@ -1619,7 +1668,7 @@ BEGIN
                         select count(*)
                         into current_shard_count
                         from pg_dist_shard_placement
-                        where nodename = target_nodename_element and shardid in (select shardid from pg_dist_shard where logicalrelid = representative_shard::regclass);
+                        where nodename = target_nodename_element and shardid in (select shardid from pg_dist_shard where logicalrelid = representative_shard);
                         
                         if (array_length(array_positions(target_has_been_chosen,logical_tb.colocationid || ':' || target_nodename_element),1) is not null) then
                             -- 如果当前这个目标节点已经被选择过，那么节点上分片数必须加上被选择过的次数（动态平衡）
@@ -1785,7 +1834,7 @@ DECLARE
     target_node_name text;
     i_source_node_port integer;
     i_target_node_port integer;
-    logical_relid_list text[];
+    logical_relid_list regclass[];
     task_status cigration.migration_status;
     
     -- 用于判断逻辑复制延迟的变量
@@ -1838,7 +1887,7 @@ BEGIN
     -- 获取该task的逻辑表名列表和分片的完整表名
     foreach shard in array shardid_list
     loop
-        select array_append(logical_relid_list, cigration.cigration_get_fulltbname(logicalrelid))
+        select array_append(logical_relid_list, logicalrelid)
         into logical_relid_list
         from pg_dist_shard 
         where shardid = shard and 
@@ -2259,7 +2308,7 @@ BEGIN
     -- 获取该task的逻辑表名列表
     foreach shard in array shardid_list
     loop
-        select array_append(logical_relid_list, cigration.cigration_get_fulltbname(logicalrelid) || '_' || shardid)
+        select array_append(logical_relid_list, shard_name(logicalrelid, shardid))
         into strict logical_relid_list
         from pg_dist_shard 
         where shardid = shard; 
@@ -2355,7 +2404,7 @@ BEGIN
     -- 获取该task的逻辑表名列表
     foreach shard in array shardid_list
     loop
-        select array_append(logical_relid_list, cigration.cigration_get_fulltbname(logicalrelid) || '_' || shardid)
+        select array_append(logical_relid_list, shard_name(logicalrelid, shardid))
         into strict logical_relid_list
         from pg_dist_shard 
         where shardid = shard; 
@@ -2593,7 +2642,7 @@ BEGIN
         -- 获取该task的逻辑表名列表
         foreach shard in array task_info.all_colocateion_shards_id
         loop
-            select array_append(logical_relid_list, cigration.cigration_get_fulltbname(logicalrelid) || '_' || shardid)
+            select array_append(logical_relid_list, shard_name(logicalrelid, shardid))
             into strict logical_relid_list
             from pg_dist_shard 
             where shardid = shard; 
@@ -2845,9 +2894,6 @@ DECLARE
     target_node_name text;
     target_node_port integer;
     target_shard_tables_with_data text;
-    logical_relid_array text[];
-    logical_schema_array text[];
-    logical_table_array text[];
     colocated_table_count integer;
     i integer;
     logical_schema text;
@@ -2882,7 +2928,7 @@ BEGIN
     where taskid = taskid_input and jobid = jobid_input;
     
     select setting into strict default_port from pg_settings where name = 'port';
-    
+
     -- 迁移前的检查
     select cigration.cigration_check_before_migration(jobid_input,taskid_input,longtime_tx_threshold,with_replica_identity_check) into strict check_result;
     if (check_result <> '') then
@@ -2907,29 +2953,18 @@ BEGIN
     WHERE  nodename = target_node_name;
 
     -- 获取亲和表的数量和逻辑表名
-    SELECT array_agg(cigration.cigration_get_fulltbname(logicalrelid))
-    INTO   STRICT logical_relid_array
-    FROM   pg_dist_shard
-    where  shardid in (select unnest(shard_id_array));
-    
     SELECT total_shard_count
     INTO   STRICT  colocated_table_count
     FROM   cigration.pg_citus_shard_migration
     WHERE  taskid = taskid_input and jobid = jobid_input;
-
-    SELECT array_agg(nspname), array_agg(relname)
-    INTO   STRICT  logical_schema_array, logical_table_array
-    FROM   pg_class c
-    LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE c.oid in (select unnest(logical_relid_array)::regclass);
     
-    select array_agg(cigration.cigration_get_fulltbname(logicalrelid) || '_' || shardid)
+    select array_agg(shard_name(logicalrelid,shardid))
     into STRICT shard_fulltablename_array
     from pg_dist_shard
     where shardid = any(shard_id_array);
     
     -- 如果有分区主表，在创建逻辑发布的时候需要把分区主表从列表里删除
-    select array_agg(cigration.cigration_get_fulltbname(logicalrelid) || '_' || shardid)
+    select array_agg(shard_name(logicalrelid,shardid))
     into strict shard_fulltablename_array_without_partition
     from pg_dist_shard 
     where shardid = any(shard_id_array) and 
@@ -2986,34 +3021,40 @@ BEGIN
         pub_created := true;
 
         -- CREATE SCHEMA IF NOT EXISTS in target node
-        FOR logical_schema IN select distinct unnest(logical_schema_array) LOOP
+        FOR logical_schema IN SELECT nspname
+                              FROM   pg_class c
+                                     LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
+                              WHERE c.oid in (SELECT distinct logicalrelid 
+                                              FROM pg_dist_shard
+                                              WHERE shardid = any(shard_id_array))
+        LOOP
             PERFORM dblink_exec(dblink_target_con_name, format('CREATE SCHEMA IF NOT EXISTS %I',logical_schema));
         END LOOP;
         
         -- create shard table in the target node
         RAISE  NOTICE  'create shard table in the target node %:%', target_node_name, target_node_port;
-        EXECUTE format($$COPY (select '') to PROGRAM 'pg_dump "host=%s port=%s user=%s dbname=%s" -s -t %s | psql "host=%s port=%s user=%s dbname=%s"'$$,
+        EXECUTE format($sql$COPY (select '') to PROGRAM $$pg_dump "host=%s port=%s user=%s dbname=%s" -s -t %s | psql "host=%s port=%s user=%s dbname=%s"$$ $sql$,
                         source_node_name,
                         source_node_port,
                         current_user,
                         current_database(),
-                        (select string_agg(table_name,' -t ') from unnest(shard_fulltablename_array) table_name),
+                        (select string_agg(format($a$'%s'$a$,table_name),' -t ') from unnest(shard_fulltablename_array) table_name),
                         target_node_name,
                         target_node_port,
                         current_user,
                         current_database());
 
-        -- 确认目标端的ddl同步成功
+        -- 确认目标端的ddl同步成功（同名表存在且数据为空）
         SELECT table_name
         INTO   target_shard_tables_with_data
         FROM   dblink(dblink_target_con_name,
                         format($$ select string_agg(table_name,',') table_name from ((select tableoid::regclass::text table_name from %s limit 1))a $$,
-                                (select string_agg(table_name,' limit 1) UNION all (select tableoid::regclass::text table_name from ') 
-                                        from unnest(shard_fulltablename_array) table_name))
+                               (select string_agg(table_name,' limit 1) UNION all (select tableoid::regclass::text table_name from ') 
+                                       from unnest(shard_fulltablename_array) table_name))
                 ) as a(table_name text);
-
+            
         IF target_shard_tables_with_data is not NULL THEN
-            RAISE  'shard tables(%) was not successfully created in target node', target_shard_tables_with_data;
+            RAISE  'shard tables(%) with data has exists in target node', target_shard_tables_with_data;
         END IF;
 
         table_created := true;
@@ -3242,44 +3283,6 @@ EXCEPTION WHEN QUERY_CANCELED or OTHERS THEN
 END;
 $cigration_get_worker_port$ LANGUAGE plpgsql;
 
-
-CREATE OR REPLACE FUNCTION cigration.cigration_get_fulltbname(logicalrelid regclass)
-RETURNS text
--- 
--- 函数名：cigration.cigration_get_fulltbname
--- 函数功能：获取完整的表名，将schema名补充到表名前
--- 参数：logicalrelid regclass
--- 返回值：fullname text
--- 
-AS $cigration_get_fulltbname$
-DECLARE
-    schema_name text;
-    tbname text;
-    max_shardid_length int;
-    upper_limit int;
-BEGIN
-    select nspname,relname
-    into strict schema_name,tbname
-    from pg_class c , pg_namespace n
-    where c.relnamespace = n.oid and c.oid = logicalrelid;
-    
-    -- 获取集群中目前最大的shardid值，取出该shardid的长度
-    select octet_length(shardid::text)
-    into strict max_shardid_length
-    from pg_dist_shard order by shardid desc limit 1;
-    
-    -- 表名长度的限制
-    -- 检查表名的长度，'_'占1个字节，shardid最多占max_shardid_length字节，一共63字节
-    upper_limit := 63 - 1 - max_shardid_length;
-    
-    if (select octet_length(tbname) > upper_limit) then
-        raise exception 'length of the identifier "%" is over % bytes.',tbname,upper_limit
-              USING HINT = 'use "alter table rename" to change the table name.';
-    else
-        return schema_name || '.' || tbname;
-    end if;
-END;
-$cigration_get_fulltbname$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION cigration.cigration_cleanup_recyclebin(jobid_input integer default null)
 RETURNS void

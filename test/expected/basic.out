@@ -49,6 +49,18 @@ select create_distributed_table('dist4','c1', colocate_with=>'none');
 insert into dist1 select generate_series(1,100000), 'aaa';
 insert into dist2 select generate_series(1,10000), 'bbb';
 insert into dist4 select generate_series(1,100000), 'ddd';
+-- 创建2条有toast存储的记录
+insert into dist2 values(10001,repeat('a',10000)),(10002,repeat('a',10000));
+-- 创建无主键，最长名称(63)且带大写字符的表
+-- 在事务块(包括函数内)调用create_distributed_table()时，输入表名长度超过55会触发citus分布式死锁
+create table "1234567890123456789012345678901234567890_Maxdist_01234567890123"(c1 int, c2 text);
+select cigration.cigration_create_distributed_table('"1234567890123456789012345678901234567890_Maxdist_01234567890123"','c1');
+ cigration_create_distributed_table 
+------------------------------------
+ 
+(1 row)
+
+insert into "1234567890123456789012345678901234567890_Maxdist_01234567890123" select generate_series(1,100000), 'ddd';
 -- 查看所有分片的初始分布
 select nodename,
        nodeport,
@@ -59,41 +71,49 @@ from pg_dist_shard_placement p
      join pg_dist_shard s on(p.shardid = s.shardid)
 where logicalrelid::text ~ 'dist'
 order by nodename,nodeport,logicalrelid,shardminvalue;
-   nodename    | nodeport | logicalrelid | shardminvalue | shardmaxvalue 
----------------+----------+--------------+---------------+---------------
- worker_1_host |    57637 | dist1        | 1073741824    | 1610612735
- worker_1_host |    57637 | dist1        | -2147483648   | -1610612737
- worker_1_host |    57637 | dist1        | -536870912    | -1
- worker_1_host |    57637 | dist2        | 1073741824    | 1610612735
- worker_1_host |    57637 | dist2        | -2147483648   | -1610612737
- worker_1_host |    57637 | dist2        | -536870912    | -1
- worker_1_host |    57637 | dist3        | 1073741824    | 1610612735
- worker_1_host |    57637 | dist3        | -2147483648   | -1610612737
- worker_1_host |    57637 | dist3        | -536870912    | -1
- worker_1_host |    57637 | dist4        | 1073741824    | 1610612735
- worker_1_host |    57637 | dist4        | -2147483648   | -1610612737
- worker_1_host |    57637 | dist4        | -536870912    | -1
- worker_2_host |    57638 | dist1        | 0             | 536870911
- worker_2_host |    57638 | dist1        | 1610612736    | 2147483647
- worker_2_host |    57638 | dist1        | -1610612736   | -1073741825
- worker_2_host |    57638 | dist2        | 0             | 536870911
- worker_2_host |    57638 | dist2        | 1610612736    | 2147483647
- worker_2_host |    57638 | dist2        | -1610612736   | -1073741825
- worker_2_host |    57638 | dist3        | 0             | 536870911
- worker_2_host |    57638 | dist3        | 1610612736    | 2147483647
- worker_2_host |    57638 | dist3        | -1610612736   | -1073741825
- worker_2_host |    57638 | dist4        | 0             | 536870911
- worker_2_host |    57638 | dist4        | 1610612736    | 2147483647
- worker_2_host |    57638 | dist4        | -1610612736   | -1073741825
- worker_3_host |    57639 | dist1        | -1073741824   | -536870913
- worker_3_host |    57639 | dist1        | 536870912     | 1073741823
- worker_3_host |    57639 | dist2        | -1073741824   | -536870913
- worker_3_host |    57639 | dist2        | 536870912     | 1073741823
- worker_3_host |    57639 | dist3        | -1073741824   | -536870913
- worker_3_host |    57639 | dist3        | 536870912     | 1073741823
- worker_3_host |    57639 | dist4        | -1073741824   | -536870913
- worker_3_host |    57639 | dist4        | 536870912     | 1073741823
-(32 rows)
+   nodename    | nodeport |                           logicalrelid                            | shardminvalue | shardmaxvalue 
+---------------+----------+-------------------------------------------------------------------+---------------+---------------
+ worker_1_host |    57637 | dist1                                                             | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist1                                                             | -2147483648   | -1610612737
+ worker_1_host |    57637 | dist1                                                             | -536870912    | -1
+ worker_1_host |    57637 | dist2                                                             | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist2                                                             | -2147483648   | -1610612737
+ worker_1_host |    57637 | dist2                                                             | -536870912    | -1
+ worker_1_host |    57637 | dist3                                                             | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist3                                                             | -2147483648   | -1610612737
+ worker_1_host |    57637 | dist3                                                             | -536870912    | -1
+ worker_1_host |    57637 | dist4                                                             | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist4                                                             | -2147483648   | -1610612737
+ worker_1_host |    57637 | dist4                                                             | -536870912    | -1
+ worker_1_host |    57637 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | 1073741824    | 1610612735
+ worker_1_host |    57637 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | -2147483648   | -1610612737
+ worker_1_host |    57637 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | -536870912    | -1
+ worker_2_host |    57638 | dist1                                                             | 0             | 536870911
+ worker_2_host |    57638 | dist1                                                             | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist1                                                             | -1610612736   | -1073741825
+ worker_2_host |    57638 | dist2                                                             | 0             | 536870911
+ worker_2_host |    57638 | dist2                                                             | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist2                                                             | -1610612736   | -1073741825
+ worker_2_host |    57638 | dist3                                                             | 0             | 536870911
+ worker_2_host |    57638 | dist3                                                             | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist3                                                             | -1610612736   | -1073741825
+ worker_2_host |    57638 | dist4                                                             | 0             | 536870911
+ worker_2_host |    57638 | dist4                                                             | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist4                                                             | -1610612736   | -1073741825
+ worker_2_host |    57638 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | 0             | 536870911
+ worker_2_host |    57638 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | 1610612736    | 2147483647
+ worker_2_host |    57638 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | -1610612736   | -1073741825
+ worker_3_host |    57639 | dist1                                                             | -1073741824   | -536870913
+ worker_3_host |    57639 | dist1                                                             | 536870912     | 1073741823
+ worker_3_host |    57639 | dist2                                                             | -1073741824   | -536870913
+ worker_3_host |    57639 | dist2                                                             | 536870912     | 1073741823
+ worker_3_host |    57639 | dist3                                                             | -1073741824   | -536870913
+ worker_3_host |    57639 | dist3                                                             | 536870912     | 1073741823
+ worker_3_host |    57639 | dist4                                                             | -1073741824   | -536870913
+ worker_3_host |    57639 | dist4                                                             | 536870912     | 1073741823
+ worker_3_host |    57639 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | -1073741824   | -536870913
+ worker_3_host |    57639 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | 536870912     | 1073741823
+(40 rows)
 
 --
 -- 2. 分片迁移
@@ -115,41 +135,49 @@ from pg_dist_shard_placement p
      join pg_dist_shard s on(p.shardid = s.shardid)
 where logicalrelid::text ~ 'dist'
 order by nodename,nodeport,logicalrelid,shardminvalue;
-   nodename    | nodeport | logicalrelid | shardminvalue | shardmaxvalue 
----------------+----------+--------------+---------------+---------------
- worker_2_host |    57638 | dist1        | 0             | 536870911
- worker_2_host |    57638 | dist1        | 1610612736    | 2147483647
- worker_2_host |    57638 | dist1        | -1610612736   | -1073741825
- worker_2_host |    57638 | dist2        | 0             | 536870911
- worker_2_host |    57638 | dist2        | 1610612736    | 2147483647
- worker_2_host |    57638 | dist2        | -1610612736   | -1073741825
- worker_2_host |    57638 | dist3        | 0             | 536870911
- worker_2_host |    57638 | dist3        | 1610612736    | 2147483647
- worker_2_host |    57638 | dist3        | -1610612736   | -1073741825
- worker_2_host |    57638 | dist4        | 0             | 536870911
- worker_2_host |    57638 | dist4        | 1610612736    | 2147483647
- worker_2_host |    57638 | dist4        | -1610612736   | -1073741825
- worker_3_host |    57639 | dist1        | 1073741824    | 1610612735
- worker_3_host |    57639 | dist1        | -1073741824   | -536870913
- worker_3_host |    57639 | dist1        | -2147483648   | -1610612737
- worker_3_host |    57639 | dist1        | 536870912     | 1073741823
- worker_3_host |    57639 | dist1        | -536870912    | -1
- worker_3_host |    57639 | dist2        | 1073741824    | 1610612735
- worker_3_host |    57639 | dist2        | -1073741824   | -536870913
- worker_3_host |    57639 | dist2        | -2147483648   | -1610612737
- worker_3_host |    57639 | dist2        | 536870912     | 1073741823
- worker_3_host |    57639 | dist2        | -536870912    | -1
- worker_3_host |    57639 | dist3        | 1073741824    | 1610612735
- worker_3_host |    57639 | dist3        | -1073741824   | -536870913
- worker_3_host |    57639 | dist3        | -2147483648   | -1610612737
- worker_3_host |    57639 | dist3        | 536870912     | 1073741823
- worker_3_host |    57639 | dist3        | -536870912    | -1
- worker_3_host |    57639 | dist4        | 1073741824    | 1610612735
- worker_3_host |    57639 | dist4        | -1073741824   | -536870913
- worker_3_host |    57639 | dist4        | -2147483648   | -1610612737
- worker_3_host |    57639 | dist4        | 536870912     | 1073741823
- worker_3_host |    57639 | dist4        | -536870912    | -1
-(32 rows)
+   nodename    | nodeport |                           logicalrelid                            | shardminvalue | shardmaxvalue 
+---------------+----------+-------------------------------------------------------------------+---------------+---------------
+ worker_2_host |    57638 | dist1                                                             | 0             | 536870911
+ worker_2_host |    57638 | dist1                                                             | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist1                                                             | -1610612736   | -1073741825
+ worker_2_host |    57638 | dist2                                                             | 0             | 536870911
+ worker_2_host |    57638 | dist2                                                             | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist2                                                             | -1610612736   | -1073741825
+ worker_2_host |    57638 | dist3                                                             | 0             | 536870911
+ worker_2_host |    57638 | dist3                                                             | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist3                                                             | -1610612736   | -1073741825
+ worker_2_host |    57638 | dist4                                                             | 0             | 536870911
+ worker_2_host |    57638 | dist4                                                             | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist4                                                             | -1610612736   | -1073741825
+ worker_2_host |    57638 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | 0             | 536870911
+ worker_2_host |    57638 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | 1610612736    | 2147483647
+ worker_2_host |    57638 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | -1610612736   | -1073741825
+ worker_3_host |    57639 | dist1                                                             | 1073741824    | 1610612735
+ worker_3_host |    57639 | dist1                                                             | -1073741824   | -536870913
+ worker_3_host |    57639 | dist1                                                             | -2147483648   | -1610612737
+ worker_3_host |    57639 | dist1                                                             | 536870912     | 1073741823
+ worker_3_host |    57639 | dist1                                                             | -536870912    | -1
+ worker_3_host |    57639 | dist2                                                             | 1073741824    | 1610612735
+ worker_3_host |    57639 | dist2                                                             | -1073741824   | -536870913
+ worker_3_host |    57639 | dist2                                                             | -2147483648   | -1610612737
+ worker_3_host |    57639 | dist2                                                             | 536870912     | 1073741823
+ worker_3_host |    57639 | dist2                                                             | -536870912    | -1
+ worker_3_host |    57639 | dist3                                                             | 1073741824    | 1610612735
+ worker_3_host |    57639 | dist3                                                             | -1073741824   | -536870913
+ worker_3_host |    57639 | dist3                                                             | -2147483648   | -1610612737
+ worker_3_host |    57639 | dist3                                                             | 536870912     | 1073741823
+ worker_3_host |    57639 | dist3                                                             | -536870912    | -1
+ worker_3_host |    57639 | dist4                                                             | 1073741824    | 1610612735
+ worker_3_host |    57639 | dist4                                                             | -1073741824   | -536870913
+ worker_3_host |    57639 | dist4                                                             | -2147483648   | -1610612737
+ worker_3_host |    57639 | dist4                                                             | 536870912     | 1073741823
+ worker_3_host |    57639 | dist4                                                             | -536870912    | -1
+ worker_3_host |    57639 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | 1073741824    | 1610612735
+ worker_3_host |    57639 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | -1073741824   | -536870913
+ worker_3_host |    57639 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | -2147483648   | -1610612737
+ worker_3_host |    57639 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | 536870912     | 1073741823
+ worker_3_host |    57639 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | -536870912    | -1
+(40 rows)
 
 -- 检查分片迁移后SQL执行正常
 select count(*) from dist1 a left join dist2 b on(a.c1=b.c1) left join dist3 c on (a.c1=c.c1);
@@ -181,41 +209,49 @@ from pg_dist_shard_placement p
      join pg_dist_shard s on(p.shardid = s.shardid)
 where logicalrelid::text ~ 'dist'
 order by nodename,nodeport,logicalrelid,shardminvalue;
-   nodename    | nodeport | logicalrelid | shardminvalue | shardmaxvalue 
----------------+----------+--------------+---------------+---------------
- worker_1_host |    57637 | dist1        | 1073741824    | 1610612735
- worker_1_host |    57637 | dist1        | 536870912     | 1073741823
- worker_1_host |    57637 | dist2        | 1073741824    | 1610612735
- worker_1_host |    57637 | dist2        | 536870912     | 1073741823
- worker_1_host |    57637 | dist3        | 1073741824    | 1610612735
- worker_1_host |    57637 | dist3        | 536870912     | 1073741823
- worker_1_host |    57637 | dist4        | 1073741824    | 1610612735
- worker_1_host |    57637 | dist4        | 536870912     | 1073741823
- worker_2_host |    57638 | dist1        | 0             | 536870911
- worker_2_host |    57638 | dist1        | 1610612736    | 2147483647
- worker_2_host |    57638 | dist1        | -1610612736   | -1073741825
- worker_2_host |    57638 | dist2        | 0             | 536870911
- worker_2_host |    57638 | dist2        | 1610612736    | 2147483647
- worker_2_host |    57638 | dist2        | -1610612736   | -1073741825
- worker_2_host |    57638 | dist3        | 0             | 536870911
- worker_2_host |    57638 | dist3        | 1610612736    | 2147483647
- worker_2_host |    57638 | dist3        | -1610612736   | -1073741825
- worker_2_host |    57638 | dist4        | 0             | 536870911
- worker_2_host |    57638 | dist4        | 1610612736    | 2147483647
- worker_2_host |    57638 | dist4        | -1610612736   | -1073741825
- worker_3_host |    57639 | dist1        | -1073741824   | -536870913
- worker_3_host |    57639 | dist1        | -2147483648   | -1610612737
- worker_3_host |    57639 | dist1        | -536870912    | -1
- worker_3_host |    57639 | dist2        | -1073741824   | -536870913
- worker_3_host |    57639 | dist2        | -2147483648   | -1610612737
- worker_3_host |    57639 | dist2        | -536870912    | -1
- worker_3_host |    57639 | dist3        | -1073741824   | -536870913
- worker_3_host |    57639 | dist3        | -2147483648   | -1610612737
- worker_3_host |    57639 | dist3        | -536870912    | -1
- worker_3_host |    57639 | dist4        | -1073741824   | -536870913
- worker_3_host |    57639 | dist4        | -2147483648   | -1610612737
- worker_3_host |    57639 | dist4        | -536870912    | -1
-(32 rows)
+   nodename    | nodeport |                           logicalrelid                            | shardminvalue | shardmaxvalue 
+---------------+----------+-------------------------------------------------------------------+---------------+---------------
+ worker_1_host |    57637 | dist1                                                             | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist1                                                             | 536870912     | 1073741823
+ worker_1_host |    57637 | dist2                                                             | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist2                                                             | 536870912     | 1073741823
+ worker_1_host |    57637 | dist3                                                             | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist3                                                             | 536870912     | 1073741823
+ worker_1_host |    57637 | dist4                                                             | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist4                                                             | 536870912     | 1073741823
+ worker_1_host |    57637 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | 1073741824    | 1610612735
+ worker_1_host |    57637 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | 536870912     | 1073741823
+ worker_2_host |    57638 | dist1                                                             | 0             | 536870911
+ worker_2_host |    57638 | dist1                                                             | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist1                                                             | -1610612736   | -1073741825
+ worker_2_host |    57638 | dist2                                                             | 0             | 536870911
+ worker_2_host |    57638 | dist2                                                             | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist2                                                             | -1610612736   | -1073741825
+ worker_2_host |    57638 | dist3                                                             | 0             | 536870911
+ worker_2_host |    57638 | dist3                                                             | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist3                                                             | -1610612736   | -1073741825
+ worker_2_host |    57638 | dist4                                                             | 0             | 536870911
+ worker_2_host |    57638 | dist4                                                             | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist4                                                             | -1610612736   | -1073741825
+ worker_2_host |    57638 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | 0             | 536870911
+ worker_2_host |    57638 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | 1610612736    | 2147483647
+ worker_2_host |    57638 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | -1610612736   | -1073741825
+ worker_3_host |    57639 | dist1                                                             | -1073741824   | -536870913
+ worker_3_host |    57639 | dist1                                                             | -2147483648   | -1610612737
+ worker_3_host |    57639 | dist1                                                             | -536870912    | -1
+ worker_3_host |    57639 | dist2                                                             | -1073741824   | -536870913
+ worker_3_host |    57639 | dist2                                                             | -2147483648   | -1610612737
+ worker_3_host |    57639 | dist2                                                             | -536870912    | -1
+ worker_3_host |    57639 | dist3                                                             | -1073741824   | -536870913
+ worker_3_host |    57639 | dist3                                                             | -2147483648   | -1610612737
+ worker_3_host |    57639 | dist3                                                             | -536870912    | -1
+ worker_3_host |    57639 | dist4                                                             | -1073741824   | -536870913
+ worker_3_host |    57639 | dist4                                                             | -2147483648   | -1610612737
+ worker_3_host |    57639 | dist4                                                             | -536870912    | -1
+ worker_3_host |    57639 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | -1073741824   | -536870913
+ worker_3_host |    57639 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | -2147483648   | -1610612737
+ worker_3_host |    57639 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | -536870912    | -1
+(40 rows)
 
 -- 检查分片迁移后SQL执行正常
 select count(*) from dist1 a left join dist2 b on(a.c1=b.c1) left join dist3 c on (a.c1=c.c1);
@@ -247,41 +283,49 @@ from pg_dist_shard_placement p
      join pg_dist_shard s on(p.shardid = s.shardid)
 where logicalrelid::text ~ 'dist'
 order by nodename,nodeport,logicalrelid,shardminvalue;
-   nodename    | nodeport | logicalrelid | shardminvalue | shardmaxvalue 
----------------+----------+--------------+---------------+---------------
- worker_1_host |    57637 | dist1        | 0             | 536870911
- worker_1_host |    57637 | dist1        | 1073741824    | 1610612735
- worker_1_host |    57637 | dist1        | -1073741824   | -536870913
- worker_1_host |    57637 | dist1        | 1610612736    | 2147483647
- worker_1_host |    57637 | dist1        | -1610612736   | -1073741825
- worker_1_host |    57637 | dist1        | -2147483648   | -1610612737
- worker_1_host |    57637 | dist1        | 536870912     | 1073741823
- worker_1_host |    57637 | dist1        | -536870912    | -1
- worker_1_host |    57637 | dist2        | 0             | 536870911
- worker_1_host |    57637 | dist2        | 1073741824    | 1610612735
- worker_1_host |    57637 | dist2        | -1073741824   | -536870913
- worker_1_host |    57637 | dist2        | 1610612736    | 2147483647
- worker_1_host |    57637 | dist2        | -1610612736   | -1073741825
- worker_1_host |    57637 | dist2        | -2147483648   | -1610612737
- worker_1_host |    57637 | dist2        | 536870912     | 1073741823
- worker_1_host |    57637 | dist2        | -536870912    | -1
- worker_1_host |    57637 | dist3        | 0             | 536870911
- worker_1_host |    57637 | dist3        | 1073741824    | 1610612735
- worker_1_host |    57637 | dist3        | -1073741824   | -536870913
- worker_1_host |    57637 | dist3        | 1610612736    | 2147483647
- worker_1_host |    57637 | dist3        | -1610612736   | -1073741825
- worker_1_host |    57637 | dist3        | -2147483648   | -1610612737
- worker_1_host |    57637 | dist3        | 536870912     | 1073741823
- worker_1_host |    57637 | dist3        | -536870912    | -1
- worker_1_host |    57637 | dist4        | 0             | 536870911
- worker_1_host |    57637 | dist4        | 1073741824    | 1610612735
- worker_1_host |    57637 | dist4        | -1073741824   | -536870913
- worker_1_host |    57637 | dist4        | 1610612736    | 2147483647
- worker_1_host |    57637 | dist4        | -1610612736   | -1073741825
- worker_1_host |    57637 | dist4        | -2147483648   | -1610612737
- worker_1_host |    57637 | dist4        | 536870912     | 1073741823
- worker_1_host |    57637 | dist4        | -536870912    | -1
-(32 rows)
+   nodename    | nodeport |                           logicalrelid                            | shardminvalue | shardmaxvalue 
+---------------+----------+-------------------------------------------------------------------+---------------+---------------
+ worker_1_host |    57637 | dist1                                                             | 0             | 536870911
+ worker_1_host |    57637 | dist1                                                             | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist1                                                             | -1073741824   | -536870913
+ worker_1_host |    57637 | dist1                                                             | 1610612736    | 2147483647
+ worker_1_host |    57637 | dist1                                                             | -1610612736   | -1073741825
+ worker_1_host |    57637 | dist1                                                             | -2147483648   | -1610612737
+ worker_1_host |    57637 | dist1                                                             | 536870912     | 1073741823
+ worker_1_host |    57637 | dist1                                                             | -536870912    | -1
+ worker_1_host |    57637 | dist2                                                             | 0             | 536870911
+ worker_1_host |    57637 | dist2                                                             | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist2                                                             | -1073741824   | -536870913
+ worker_1_host |    57637 | dist2                                                             | 1610612736    | 2147483647
+ worker_1_host |    57637 | dist2                                                             | -1610612736   | -1073741825
+ worker_1_host |    57637 | dist2                                                             | -2147483648   | -1610612737
+ worker_1_host |    57637 | dist2                                                             | 536870912     | 1073741823
+ worker_1_host |    57637 | dist2                                                             | -536870912    | -1
+ worker_1_host |    57637 | dist3                                                             | 0             | 536870911
+ worker_1_host |    57637 | dist3                                                             | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist3                                                             | -1073741824   | -536870913
+ worker_1_host |    57637 | dist3                                                             | 1610612736    | 2147483647
+ worker_1_host |    57637 | dist3                                                             | -1610612736   | -1073741825
+ worker_1_host |    57637 | dist3                                                             | -2147483648   | -1610612737
+ worker_1_host |    57637 | dist3                                                             | 536870912     | 1073741823
+ worker_1_host |    57637 | dist3                                                             | -536870912    | -1
+ worker_1_host |    57637 | dist4                                                             | 0             | 536870911
+ worker_1_host |    57637 | dist4                                                             | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist4                                                             | -1073741824   | -536870913
+ worker_1_host |    57637 | dist4                                                             | 1610612736    | 2147483647
+ worker_1_host |    57637 | dist4                                                             | -1610612736   | -1073741825
+ worker_1_host |    57637 | dist4                                                             | -2147483648   | -1610612737
+ worker_1_host |    57637 | dist4                                                             | 536870912     | 1073741823
+ worker_1_host |    57637 | dist4                                                             | -536870912    | -1
+ worker_1_host |    57637 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | 0             | 536870911
+ worker_1_host |    57637 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | 1073741824    | 1610612735
+ worker_1_host |    57637 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | -1073741824   | -536870913
+ worker_1_host |    57637 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | 1610612736    | 2147483647
+ worker_1_host |    57637 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | -1610612736   | -1073741825
+ worker_1_host |    57637 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | -2147483648   | -1610612737
+ worker_1_host |    57637 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | 536870912     | 1073741823
+ worker_1_host |    57637 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | -536870912    | -1
+(40 rows)
 
 -- 检查分片迁移后SQL执行正常
 select count(*) from dist1 a left join dist2 b on(a.c1=b.c1) left join dist3 c on (a.c1=c.c1);
@@ -313,41 +357,49 @@ from pg_dist_shard_placement p
      join pg_dist_shard s on(p.shardid = s.shardid)
 where logicalrelid::text ~ 'dist'
 order by nodename,nodeport,logicalrelid,shardminvalue;
-   nodename    | nodeport | logicalrelid | shardminvalue | shardmaxvalue 
----------------+----------+--------------+---------------+---------------
- worker_1_host |    57637 | dist1        | -1073741824   | -536870913
- worker_1_host |    57637 | dist1        | -1610612736   | -1073741825
- worker_1_host |    57637 | dist1        | -2147483648   | -1610612737
- worker_1_host |    57637 | dist2        | -1073741824   | -536870913
- worker_1_host |    57637 | dist2        | -1610612736   | -1073741825
- worker_1_host |    57637 | dist2        | -2147483648   | -1610612737
- worker_1_host |    57637 | dist3        | -1073741824   | -536870913
- worker_1_host |    57637 | dist3        | -1610612736   | -1073741825
- worker_1_host |    57637 | dist3        | -2147483648   | -1610612737
- worker_1_host |    57637 | dist4        | -1073741824   | -536870913
- worker_1_host |    57637 | dist4        | -1610612736   | -1073741825
- worker_1_host |    57637 | dist4        | -2147483648   | -1610612737
- worker_2_host |    57638 | dist1        | 0             | 536870911
- worker_2_host |    57638 | dist1        | 536870912     | 1073741823
- worker_2_host |    57638 | dist1        | -536870912    | -1
- worker_2_host |    57638 | dist2        | 0             | 536870911
- worker_2_host |    57638 | dist2        | 536870912     | 1073741823
- worker_2_host |    57638 | dist2        | -536870912    | -1
- worker_2_host |    57638 | dist3        | 0             | 536870911
- worker_2_host |    57638 | dist3        | 536870912     | 1073741823
- worker_2_host |    57638 | dist3        | -536870912    | -1
- worker_2_host |    57638 | dist4        | 0             | 536870911
- worker_2_host |    57638 | dist4        | 536870912     | 1073741823
- worker_2_host |    57638 | dist4        | -536870912    | -1
- worker_3_host |    57639 | dist1        | 1073741824    | 1610612735
- worker_3_host |    57639 | dist1        | 1610612736    | 2147483647
- worker_3_host |    57639 | dist2        | 1073741824    | 1610612735
- worker_3_host |    57639 | dist2        | 1610612736    | 2147483647
- worker_3_host |    57639 | dist3        | 1073741824    | 1610612735
- worker_3_host |    57639 | dist3        | 1610612736    | 2147483647
- worker_3_host |    57639 | dist4        | 1073741824    | 1610612735
- worker_3_host |    57639 | dist4        | 1610612736    | 2147483647
-(32 rows)
+   nodename    | nodeport |                           logicalrelid                            | shardminvalue | shardmaxvalue 
+---------------+----------+-------------------------------------------------------------------+---------------+---------------
+ worker_1_host |    57637 | dist1                                                             | -1073741824   | -536870913
+ worker_1_host |    57637 | dist1                                                             | -1610612736   | -1073741825
+ worker_1_host |    57637 | dist1                                                             | -2147483648   | -1610612737
+ worker_1_host |    57637 | dist2                                                             | -1073741824   | -536870913
+ worker_1_host |    57637 | dist2                                                             | -1610612736   | -1073741825
+ worker_1_host |    57637 | dist2                                                             | -2147483648   | -1610612737
+ worker_1_host |    57637 | dist3                                                             | -1073741824   | -536870913
+ worker_1_host |    57637 | dist3                                                             | -1610612736   | -1073741825
+ worker_1_host |    57637 | dist3                                                             | -2147483648   | -1610612737
+ worker_1_host |    57637 | dist4                                                             | -1073741824   | -536870913
+ worker_1_host |    57637 | dist4                                                             | -1610612736   | -1073741825
+ worker_1_host |    57637 | dist4                                                             | -2147483648   | -1610612737
+ worker_1_host |    57637 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | -1073741824   | -536870913
+ worker_1_host |    57637 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | -1610612736   | -1073741825
+ worker_1_host |    57637 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | -2147483648   | -1610612737
+ worker_2_host |    57638 | dist1                                                             | 0             | 536870911
+ worker_2_host |    57638 | dist1                                                             | 536870912     | 1073741823
+ worker_2_host |    57638 | dist1                                                             | -536870912    | -1
+ worker_2_host |    57638 | dist2                                                             | 0             | 536870911
+ worker_2_host |    57638 | dist2                                                             | 536870912     | 1073741823
+ worker_2_host |    57638 | dist2                                                             | -536870912    | -1
+ worker_2_host |    57638 | dist3                                                             | 0             | 536870911
+ worker_2_host |    57638 | dist3                                                             | 536870912     | 1073741823
+ worker_2_host |    57638 | dist3                                                             | -536870912    | -1
+ worker_2_host |    57638 | dist4                                                             | 0             | 536870911
+ worker_2_host |    57638 | dist4                                                             | 536870912     | 1073741823
+ worker_2_host |    57638 | dist4                                                             | -536870912    | -1
+ worker_2_host |    57638 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | 0             | 536870911
+ worker_2_host |    57638 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | 536870912     | 1073741823
+ worker_2_host |    57638 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | -536870912    | -1
+ worker_3_host |    57639 | dist1                                                             | 1073741824    | 1610612735
+ worker_3_host |    57639 | dist1                                                             | 1610612736    | 2147483647
+ worker_3_host |    57639 | dist2                                                             | 1073741824    | 1610612735
+ worker_3_host |    57639 | dist2                                                             | 1610612736    | 2147483647
+ worker_3_host |    57639 | dist3                                                             | 1073741824    | 1610612735
+ worker_3_host |    57639 | dist3                                                             | 1610612736    | 2147483647
+ worker_3_host |    57639 | dist4                                                             | 1073741824    | 1610612735
+ worker_3_host |    57639 | dist4                                                             | 1610612736    | 2147483647
+ worker_3_host |    57639 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | 1073741824    | 1610612735
+ worker_3_host |    57639 | "1234567890123456789012345678901234567890_Maxdist_01234567890123" | 1610612736    | 2147483647
+(40 rows)
 
 -- 检查分片迁移后SQL执行正常
 select count(*) from dist1 a left join dist2 b on(a.c1=b.c1) left join dist3 c on (a.c1=c.c1);
@@ -357,6 +409,12 @@ select count(*) from dist1 a left join dist2 b on(a.c1=b.c1) left join dist3 c o
 (1 row)
 
 select count(*) from dist4;
+ count  
+--------
+ 100000
+(1 row)
+
+select count(*) from "1234567890123456789012345678901234567890_Maxdist_01234567890123";
  count  
 --------
  100000

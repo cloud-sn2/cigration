@@ -80,23 +80,21 @@ from pg_dist_partition,t where logicalrelid::text ~ 'dist' order by colocationid
 select count(*) from dist1 a left join dist5 b on(a.c1=b.c1) left join dist6 c on (a.c1=c.c1);
 
 --
--- 3. 存在迁移任务时，不允许创建colocate_with非none的hash分片表，防止破坏分片表的亲和依赖
+-- 3. 存在迁移任务时，不允许创建hash分片表，防止破坏分片表的亲和依赖以及破坏分片的迁移目标
 --
 
 -- 创建分片迁移任务
 select jobid from cigration_create_worker_migration_job(:'worker_1_host', :'worker_3_host') limit 1 \gset
 
--- 创建colocate_with非none的分片表，期待异常
+-- 创建hash分片表，期待异常
 create table dist7(c1 int primary key, c2 text);
 select cigration_create_distributed_table('dist7','c1', colocate_with=>'default');
 
 select cigration_create_distributed_table('dist7','c1', colocate_with=>'dist1');
 
-
--- 创建colocate_with为none的分片表，期待成功
 select cigration_create_distributed_table('dist7','c1', colocate_with=>'none');
 
--- 创建append的分片表，期待成功
+-- 创建append分片表，期待成功
 create table dist8(c1 int, c2 text);
 select cigration_create_distributed_table('dist8','c1', distribution_type=>'append');
 
@@ -130,11 +128,11 @@ from pg_dist_partition,t where logicalrelid::text ~ 'dist' order by colocationid
 select count(*) from dist7;
 
 --
--- 5. 在指定worker上创建分片(多分片,多worker)
+-- 5. 在指定worker上创建分片(多分片,多worker,特殊表名)
 --
 set citus.shard_count = 8;
-create table dist8(c1 int primary key, c2 text);
-select cigration_create_distributed_table('dist8','c1', ARRAY[:'worker_2_host',:'worker_3_host'], ARRAY[:worker_2_port,:worker_3_port]);
+create table "1234567890123456789012345678901234567890_Maxdist8_0123456789012"(c1 int primary key, c2 text);
+select cigration_create_distributed_table('"1234567890123456789012345678901234567890_Maxdist8_0123456789012"','c1', ARRAY[:'worker_2_host',:'worker_3_host'], ARRAY[:worker_2_port,:worker_3_port]);
 
 -- 查看分片的分布
 select nodename,
@@ -153,7 +151,7 @@ select min(colocationid) min_colocationid from pg_dist_partition where logicalre
 select logicalrelid, partmethod, partkey,colocationid - min_colocationid + 1 as relative_colocationid
 from pg_dist_partition,t where logicalrelid::text ~ 'dist' order by colocationid,logicalrelid::text;
 
-select count(*) from dist8;
+select count(*) from "1234567890123456789012345678901234567890_Maxdist8_0123456789012";
 
 
 --

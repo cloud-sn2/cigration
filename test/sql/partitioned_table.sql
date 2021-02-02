@@ -45,16 +45,26 @@ CREATE TABLE dist2_2 PARTITION OF dist2
 -- dist3是非分区表
 create table dist3(c1 int primary key, c2 text, c3 int, c4 int);
 
+-- 特殊表名(63字节)的范围分区表
+CREATE TABLE "1234567890123456789012345678901234567890_Maxdist4_0123456789012"(c1 int, c2 text, c3 int, c4 int)
+    PARTITION BY RANGE (c3);
+
+CREATE TABLE "1234567890123456789012345678901234567890_Maxdist4_01234567890_1" PARTITION OF "1234567890123456789012345678901234567890_Maxdist4_0123456789012"
+    FOR VALUES FROM (1) TO (50001);
+CREATE TABLE "1234567890123456789012345678901234567890_Maxdist4_01234567890_2" PARTITION OF "1234567890123456789012345678901234567890_Maxdist4_0123456789012"
+    FOR VALUES FROM (50001) TO (100001);
+
+
 select create_distributed_table('dist1','c1', colocate_with=>'default');
 select create_distributed_table('dist2','c1', colocate_with=>'default');
 select create_distributed_table('dist3','c1', colocate_with=>'default');
-
+select create_distributed_table('"1234567890123456789012345678901234567890_Maxdist4_0123456789012"','c1', colocate_with=>'default');
 
 -- 插入数据
 insert into dist1 select id, 'aaa', id, id from generate_series(1,100000) id;
 insert into dist2 select id, 'bbb', id%10, id from generate_series(1,10000) id;
 insert into dist3 select id, 'ccc', id, id from generate_series(1,100000) id;
-
+insert into "1234567890123456789012345678901234567890_Maxdist4_0123456789012" select id, 'ccc', id, id from generate_series(1,100000) id;
 
 -- 查看所有分片的初始分布
 select nodename,
@@ -107,7 +117,10 @@ where logicalrelid::text ~ 'dist'
 order by nodename,nodeport,logicalrelid,shardminvalue;
 
 -- 检查分片迁移后SQL执行正常
-select count(*) from dist1 a left join dist2 b on(a.c1=b.c1) left join dist3 c on (a.c1=c.c1);
+select count(*) from dist1 a 
+  left join dist2 b on(a.c1=b.c1) 
+  left join dist3 c on (a.c1=c.c1) 
+  left join "1234567890123456789012345678901234567890_Maxdist4_0123456789012" d on (a.c1=d.c1);
 
 -- 从worker2和worker3迁移走所有分片（缩容）
 select jobid from cigration_create_del_node_job(array[:'worker_2_host',:'worker_3_host']) limit 1 \gset
@@ -125,7 +138,10 @@ where logicalrelid::text ~ 'dist'
 order by nodename,nodeport,logicalrelid,shardminvalue;
 
 -- 检查分片迁移后SQL执行正常
-select count(*) from dist1 a left join dist2 b on(a.c1=b.c1) left join dist3 c on (a.c1=c.c1);
+select count(*) from dist1 a 
+  left join dist2 b on(a.c1=b.c1) 
+  left join dist3 c on (a.c1=c.c1) 
+  left join "1234567890123456789012345678901234567890_Maxdist4_0123456789012" d on (a.c1=d.c1);
 
 -- 分片再平衡(扩容)
 select jobid from cigration_create_rebalance_job() limit 1 \gset
@@ -143,7 +159,10 @@ where logicalrelid::text ~ 'dist'
 order by nodename,nodeport,logicalrelid,shardminvalue;
 
 -- 检查分片迁移后SQL执行正常
-select count(*) from dist1 a left join dist2 b on(a.c1=b.c1) left join dist3 c on (a.c1=c.c1);
+select count(*) from dist1 a 
+  left join dist2 b on(a.c1=b.c1) 
+  left join dist3 c on (a.c1=c.c1) 
+  left join "1234567890123456789012345678901234567890_Maxdist4_0123456789012" d on (a.c1=d.c1);
 
 
 --

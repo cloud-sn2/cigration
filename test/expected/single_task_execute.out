@@ -1,0 +1,445 @@
+/** 
+测试环境信息
+CN：127.0.0.1
+    WORKER1：worker_1_host/57637
+    WORKER2：worker_2_host/57638
+    WORKER3：worker_3_host/57639
+
+worker_1_host、worker_2_host、worker_3_host：都是127.0.0.1
+*/
+set datestyle = ISO, YMD;
+set search_path = cigration_regress_test, cigration, public;
+set citus.shard_count = 8;
+set client_min_messages to warning;
+drop schema if exists cigration_regress_test cascade;
+create schema cigration_regress_test;
+--
+-- 1. 建表
+--
+-- 创建1组亲和的分片表
+create table dist1(c1 int primary key, c2 text);
+create table dist2(c1 int primary key, c2 text);
+create table dist3(c1 int primary key, c2 text);
+select create_distributed_table('dist1','c1', colocate_with=>'none');
+ create_distributed_table 
+--------------------------
+ 
+(1 row)
+
+select create_distributed_table('dist2','c1', colocate_with=>'dist1');
+ create_distributed_table 
+--------------------------
+ 
+(1 row)
+
+select create_distributed_table('dist3','c1', colocate_with=>'dist1');
+ create_distributed_table 
+--------------------------
+ 
+(1 row)
+
+-- 插入数据
+insert into dist1 select generate_series(1,100000), 'aaa';
+insert into dist2 select generate_series(1,10000), 'bbb';
+insert into dist3 select generate_series(1,100000), 'ccc';
+-- 查看所有分片的初始分布
+select nodename,
+       nodeport,
+       logicalrelid,
+       shardminvalue,
+       shardmaxvalue
+from pg_dist_shard_placement p
+     join pg_dist_shard s on(p.shardid = s.shardid)
+where logicalrelid::text ~ 'dist'
+order by nodename,nodeport,logicalrelid,shardminvalue;
+   nodename    | nodeport | logicalrelid | shardminvalue | shardmaxvalue 
+---------------+----------+--------------+---------------+---------------
+ worker_1_host |    57637 | dist1        | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist1        | -2147483648   | -1610612737
+ worker_1_host |    57637 | dist1        | -536870912    | -1
+ worker_1_host |    57637 | dist2        | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist2        | -2147483648   | -1610612737
+ worker_1_host |    57637 | dist2        | -536870912    | -1
+ worker_1_host |    57637 | dist3        | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist3        | -2147483648   | -1610612737
+ worker_1_host |    57637 | dist3        | -536870912    | -1
+ worker_2_host |    57638 | dist1        | 0             | 536870911
+ worker_2_host |    57638 | dist1        | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist1        | -1610612736   | -1073741825
+ worker_2_host |    57638 | dist2        | 0             | 536870911
+ worker_2_host |    57638 | dist2        | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist2        | -1610612736   | -1073741825
+ worker_2_host |    57638 | dist3        | 0             | 536870911
+ worker_2_host |    57638 | dist3        | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist3        | -1610612736   | -1073741825
+ worker_3_host |    57639 | dist1        | -1073741824   | -536870913
+ worker_3_host |    57639 | dist1        | 536870912     | 1073741823
+ worker_3_host |    57639 | dist2        | -1073741824   | -536870913
+ worker_3_host |    57639 | dist2        | 536870912     | 1073741823
+ worker_3_host |    57639 | dist3        | -1073741824   | -536870913
+ worker_3_host |    57639 | dist3        | 536870912     | 1073741823
+(24 rows)
+
+--
+-- 2. 分片迁移
+--
+-- 创建迁移worker1的所有分片到worker3的job并获取第一个迁移任务的jobid和taskid
+select jobid, taskid from cigration_create_worker_migration_job(:'worker_1_host', :'worker_3_host') limit 1 \gset
+select source_nodename,source_nodeport,target_nodename,target_nodeport,status,total_shard_count
+from pg_citus_shard_migration where jobid=:jobid and taskid=:taskid;
+ source_nodename | source_nodeport | target_nodename | target_nodeport | status | total_shard_count 
+-----------------+-----------------+-----------------+-----------------+--------+-------------------
+ worker_1_host   |           57637 | worker_3_host   |           57639 | init   |                 3
+(1 row)
+
+-- 迁移任务的初始状态为init
+select cigration_monitor_shard_migration_task(:jobid, :taskid);
+ cigration_monitor_shard_migration_task 
+----------------------------------------
+ task_is_not_running
+(1 row)
+
+-- 启动迁移任务
+select cigration_start_shard_migration_task(:jobid, :taskid);
+ cigration_start_shard_migration_task 
+--------------------------------------
+ init_succeed
+(1 row)
+
+select cigration_monitor_shard_migration_task(:jobid, :taskid);
+ cigration_monitor_shard_migration_task 
+----------------------------------------
+ wait_init_data_sync
+(1 row)
+
+-- 取消迁移任务
+select cigration_cancel_shard_migration_task(:jobid, :taskid);
+ cigration_cancel_shard_migration_task 
+---------------------------------------
+ cancel_succeed
+(1 row)
+
+select cigration_monitor_shard_migration_task(:jobid, :taskid);
+ cigration_monitor_shard_migration_task 
+----------------------------------------
+ task_is_not_running
+(1 row)
+
+select status from pg_citus_shard_migration where jobid=:jobid and taskid=:taskid;
+  status  
+----------
+ canceled
+(1 row)
+
+-- 检查分片位置未变更，且SQL执行正常
+select nodename,
+       nodeport,
+       logicalrelid,
+       shardminvalue,
+       shardmaxvalue
+from pg_dist_shard_placement p
+     join pg_dist_shard s on(p.shardid = s.shardid)
+where logicalrelid::text ~ 'dist'
+order by nodename,nodeport,logicalrelid,shardminvalue;
+   nodename    | nodeport | logicalrelid | shardminvalue | shardmaxvalue 
+---------------+----------+--------------+---------------+---------------
+ worker_1_host |    57637 | dist1        | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist1        | -2147483648   | -1610612737
+ worker_1_host |    57637 | dist1        | -536870912    | -1
+ worker_1_host |    57637 | dist2        | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist2        | -2147483648   | -1610612737
+ worker_1_host |    57637 | dist2        | -536870912    | -1
+ worker_1_host |    57637 | dist3        | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist3        | -2147483648   | -1610612737
+ worker_1_host |    57637 | dist3        | -536870912    | -1
+ worker_2_host |    57638 | dist1        | 0             | 536870911
+ worker_2_host |    57638 | dist1        | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist1        | -1610612736   | -1073741825
+ worker_2_host |    57638 | dist2        | 0             | 536870911
+ worker_2_host |    57638 | dist2        | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist2        | -1610612736   | -1073741825
+ worker_2_host |    57638 | dist3        | 0             | 536870911
+ worker_2_host |    57638 | dist3        | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist3        | -1610612736   | -1073741825
+ worker_3_host |    57639 | dist1        | -1073741824   | -536870913
+ worker_3_host |    57639 | dist1        | 536870912     | 1073741823
+ worker_3_host |    57639 | dist2        | -1073741824   | -536870913
+ worker_3_host |    57639 | dist2        | 536870912     | 1073741823
+ worker_3_host |    57639 | dist3        | -1073741824   | -536870913
+ worker_3_host |    57639 | dist3        | 536870912     | 1073741823
+(24 rows)
+
+select count(*) from dist1 a left join dist2 b on(a.c1=b.c1) left join dist3 c on (a.c1=c.c1);
+ count  
+--------
+ 100000
+(1 row)
+
+-- 重新启动迁移任务
+select cigration_start_shard_migration_task(:jobid, :taskid);
+ cigration_start_shard_migration_task 
+--------------------------------------
+ init_succeed
+(1 row)
+
+select pg_sleep(10);
+ pg_sleep 
+----------
+ 
+(1 row)
+
+select cigration_monitor_shard_migration_task(:jobid, :taskid);
+ cigration_monitor_shard_migration_task 
+----------------------------------------
+ data_sync
+(1 row)
+
+-- 人为构造主键冲突触发逻辑复制错误
+SELECT
+    source_nodename,
+    source_nodeport,
+    target_nodename,
+    target_nodeport,
+    logicalrelid::text table_name,
+    shard_name(logicalrelid,s.shardid)
+FROM pg_citus_shard_migration m
+     JOIN pg_dist_shard s ON(all_colocateion_shards_id[1] = s.shardid)
+WHERE jobid=:jobid and taskid=:taskid \gset
+SELECT dblink_exec(format('host=%s port=%s user=%s dbname=%s',
+                  :'target_nodename', :'target_nodeport', CURRENT_USER, current_database()), 
+                   format($$insert into %s values(-1,'zzz')$$, 
+                          :'shard_name')
+                   );
+ dblink_exec 
+-------------
+ INSERT 0 1
+(1 row)
+
+SELECT dblink_exec(format('host=%s port=%s user=%s dbname=%s',
+                  :'source_nodename', :'source_nodeport', CURRENT_USER, current_database()), 
+                   format($$insert into %s values(-1,'yyy')$$, 
+                          :'shard_name')
+                   );
+ dblink_exec 
+-------------
+ INSERT 0 1
+(1 row)
+
+select cigration_complete_shard_migration_task(:jobid, :taskid);
+ cigration_complete_shard_migration_task 
+-----------------------------------------
+ replication_broken
+(1 row)
+
+select cigration_monitor_shard_migration_task(:jobid, :taskid);
+ cigration_monitor_shard_migration_task 
+----------------------------------------
+ replication_broken
+(1 row)
+
+-- 取消迁移任务
+select cigration_cancel_shard_migration_task(:jobid, :taskid);
+ cigration_cancel_shard_migration_task 
+---------------------------------------
+ cancel_succeed
+(1 row)
+
+select cigration_monitor_shard_migration_task(:jobid, :taskid);
+ cigration_monitor_shard_migration_task 
+----------------------------------------
+ task_is_not_running
+(1 row)
+
+select status from pg_citus_shard_migration where jobid=:jobid and taskid=:taskid;
+  status  
+----------
+ canceled
+(1 row)
+
+-- 检查分片位置未变更，且SQL执行正常
+select nodename,
+       nodeport,
+       logicalrelid,
+       shardminvalue,
+       shardmaxvalue
+from pg_dist_shard_placement p
+     join pg_dist_shard s on(p.shardid = s.shardid)
+where logicalrelid::text ~ 'dist'
+order by nodename,nodeport,logicalrelid,shardminvalue;
+   nodename    | nodeport | logicalrelid | shardminvalue | shardmaxvalue 
+---------------+----------+--------------+---------------+---------------
+ worker_1_host |    57637 | dist1        | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist1        | -2147483648   | -1610612737
+ worker_1_host |    57637 | dist1        | -536870912    | -1
+ worker_1_host |    57637 | dist2        | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist2        | -2147483648   | -1610612737
+ worker_1_host |    57637 | dist2        | -536870912    | -1
+ worker_1_host |    57637 | dist3        | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist3        | -2147483648   | -1610612737
+ worker_1_host |    57637 | dist3        | -536870912    | -1
+ worker_2_host |    57638 | dist1        | 0             | 536870911
+ worker_2_host |    57638 | dist1        | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist1        | -1610612736   | -1073741825
+ worker_2_host |    57638 | dist2        | 0             | 536870911
+ worker_2_host |    57638 | dist2        | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist2        | -1610612736   | -1073741825
+ worker_2_host |    57638 | dist3        | 0             | 536870911
+ worker_2_host |    57638 | dist3        | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist3        | -1610612736   | -1073741825
+ worker_3_host |    57639 | dist1        | -1073741824   | -536870913
+ worker_3_host |    57639 | dist1        | 536870912     | 1073741823
+ worker_3_host |    57639 | dist2        | -1073741824   | -536870913
+ worker_3_host |    57639 | dist2        | 536870912     | 1073741823
+ worker_3_host |    57639 | dist3        | -1073741824   | -536870913
+ worker_3_host |    57639 | dist3        | 536870912     | 1073741823
+(24 rows)
+
+select count(*) from dist1 a left join dist2 b on(a.c1=b.c1) left join dist3 c on (a.c1=c.c1);
+ count  
+--------
+ 100000
+(1 row)
+
+-- 重置被取消的迁移任务
+select cigration_shard_migration_env_cleanup();
+ cigration_shard_migration_env_cleanup 
+---------------------------------------
+ 
+(1 row)
+
+select cigration_monitor_shard_migration_task(:jobid, :taskid);
+ cigration_monitor_shard_migration_task 
+----------------------------------------
+ task_is_not_running
+(1 row)
+
+select status from pg_citus_shard_migration where jobid=:jobid and taskid=:taskid;
+ status 
+--------
+ init
+(1 row)
+
+-- 重新启动并完成迁移任务
+select cigration_start_shard_migration_task(:jobid, :taskid);
+ cigration_start_shard_migration_task 
+--------------------------------------
+ init_succeed
+(1 row)
+
+select cigration_complete_shard_migration_task(:jobid, :taskid, init_sync_timeout=>10, data_sync_timeout=>20);
+ cigration_complete_shard_migration_task 
+-----------------------------------------
+ complete
+(1 row)
+
+-- 检查分片位置已变更，且SQL执行正常
+select nodename,
+       nodeport,
+       logicalrelid,
+       shardminvalue,
+       shardmaxvalue
+from pg_dist_shard_placement p
+     join pg_dist_shard s on(p.shardid = s.shardid)
+where logicalrelid::text ~ 'dist'
+order by nodename,nodeport,logicalrelid,shardminvalue;
+   nodename    | nodeport | logicalrelid | shardminvalue | shardmaxvalue 
+---------------+----------+--------------+---------------+---------------
+ worker_1_host |    57637 | dist1        | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist1        | -536870912    | -1
+ worker_1_host |    57637 | dist2        | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist2        | -536870912    | -1
+ worker_1_host |    57637 | dist3        | 1073741824    | 1610612735
+ worker_1_host |    57637 | dist3        | -536870912    | -1
+ worker_2_host |    57638 | dist1        | 0             | 536870911
+ worker_2_host |    57638 | dist1        | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist1        | -1610612736   | -1073741825
+ worker_2_host |    57638 | dist2        | 0             | 536870911
+ worker_2_host |    57638 | dist2        | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist2        | -1610612736   | -1073741825
+ worker_2_host |    57638 | dist3        | 0             | 536870911
+ worker_2_host |    57638 | dist3        | 1610612736    | 2147483647
+ worker_2_host |    57638 | dist3        | -1610612736   | -1073741825
+ worker_3_host |    57639 | dist1        | -1073741824   | -536870913
+ worker_3_host |    57639 | dist1        | -2147483648   | -1610612737
+ worker_3_host |    57639 | dist1        | 536870912     | 1073741823
+ worker_3_host |    57639 | dist2        | -1073741824   | -536870913
+ worker_3_host |    57639 | dist2        | -2147483648   | -1610612737
+ worker_3_host |    57639 | dist2        | 536870912     | 1073741823
+ worker_3_host |    57639 | dist3        | -1073741824   | -536870913
+ worker_3_host |    57639 | dist3        | -2147483648   | -1610612737
+ worker_3_host |    57639 | dist3        | 536870912     | 1073741823
+(24 rows)
+
+-- 归档迁移任务
+select cigration_task_cleanup(:jobid, :taskid);
+ cigration_task_cleanup 
+------------------------
+ 
+(1 row)
+
+select source_nodename,source_nodeport,target_nodename,target_nodeport,status,total_shard_count
+from pg_citus_shard_migration where jobid=:jobid and taskid=:taskid;
+ source_nodename | source_nodeport | target_nodename | target_nodeport | status | total_shard_count 
+-----------------+-----------------+-----------------+-----------------+--------+-------------------
+(0 rows)
+
+select source_nodename,source_nodeport,target_nodename,target_nodeport,status,total_shard_count
+from pg_citus_shard_migration_history where jobid=:jobid and taskid=:taskid;
+ source_nodename | source_nodeport | target_nodename | target_nodeport |  status   | total_shard_count 
+-----------------+-----------------+-----------------+-----------------+-----------+-------------------
+ worker_1_host   |           57637 | worker_3_host   |           57639 | completed |                 3
+(1 row)
+
+-- 清除pg_citus_shard_migration中的所有未启动的任务
+select count(*) from pg_citus_shard_migration;
+ count 
+-------
+     2
+(1 row)
+
+select cigration_task_cleanup(jobid, taskid) from pg_citus_shard_migration;
+ cigration_task_cleanup 
+------------------------
+ 
+ 
+(2 rows)
+
+select count(*) from pg_citus_shard_migration;
+ count 
+-------
+     0
+(1 row)
+
+--
+-- 3. 旧分片清理
+--
+select nodename,nodeport,count(*)
+from cigration_get_recyclebin_metadata()
+group by nodename,nodeport
+order by nodename,nodeport;
+   nodename    | nodeport | count 
+---------------+----------+-------
+ worker_1_host |    57637 |     1
+ worker_2_host |    57638 |     1
+ worker_3_host |    57639 |     1
+(3 rows)
+
+select cigration_cleanup_recyclebin();
+ cigration_cleanup_recyclebin 
+------------------------------
+ 
+(1 row)
+
+select nodename,nodeport,count(*)
+from cigration_get_recyclebin_metadata()
+group by nodename,nodeport
+order by nodename,nodeport;
+ nodename | nodeport | count 
+----------+----------+-------
+(0 rows)
+
+--
+-- 4. 测试环境清理
+--
+truncate pg_citus_shard_migration_history;
+truncate pg_citus_shard_migration_sql_log;

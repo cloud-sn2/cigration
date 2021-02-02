@@ -37,6 +37,17 @@ insert into dist1 select generate_series(1,100000), 'aaa';
 insert into dist2 select generate_series(1,10000), 'bbb';
 insert into dist4 select generate_series(1,100000), 'ddd';
 
+-- 创建2条有toast存储的记录
+insert into dist2 values(10001,repeat('a',10000)),(10002,repeat('a',10000));
+
+-- 创建无主键，最长名称(63)且带大写字符的表
+-- 在事务块(包括函数内)调用create_distributed_table()时，输入表名长度超过55会触发citus分布式死锁
+create table "1234567890123456789012345678901234567890_Maxdist_01234567890123"(c1 int, c2 text);
+select cigration.cigration_create_distributed_table('"1234567890123456789012345678901234567890_Maxdist_01234567890123"','c1');
+
+insert into "1234567890123456789012345678901234567890_Maxdist_01234567890123" select generate_series(1,100000), 'ddd';
+
+
 -- 查看所有分片的初始分布
 select nodename,
        nodeport,
@@ -127,7 +138,7 @@ order by nodename,nodeport,logicalrelid,shardminvalue;
 -- 检查分片迁移后SQL执行正常
 select count(*) from dist1 a left join dist2 b on(a.c1=b.c1) left join dist3 c on (a.c1=c.c1);
 select count(*) from dist4;
-
+select count(*) from "1234567890123456789012345678901234567890_Maxdist_01234567890123";
 
 --
 -- 3. 旧分片清理

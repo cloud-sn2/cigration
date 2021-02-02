@@ -79,8 +79,8 @@ from pg_dist_partition,t where logicalrelid::text ~ 'dist' order by colocationid
  logicalrelid | partmethod |                                                        partkey                                                         | relative_colocationid 
 --------------+------------+------------------------------------------------------------------------------------------------------------------------+-----------------------
  dist3        | a          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     1
- dist1        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     2
- dist2        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     2
+ dist1        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
+ dist2        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
 (3 rows)
 
 select count(*) from dist2;
@@ -125,11 +125,11 @@ from pg_dist_partition,t where logicalrelid::text ~ 'dist' order by colocationid
  logicalrelid | partmethod |                                                        partkey                                                         | relative_colocationid 
 --------------+------------+------------------------------------------------------------------------------------------------------------------------+-----------------------
  dist3        | a          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     1
- dist1        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     2
- dist2        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     2
- dist5        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     2
- dist6        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     2
- dist4        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     4
+ dist1        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
+ dist2        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
+ dist5        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
+ dist6        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
+ dist4        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                    11
 (6 rows)
 
 select count(*) from dist1 a left join dist5 b on(a.c1=b.c1) left join dist6 c on (a.c1=c.c1);
@@ -139,28 +139,25 @@ select count(*) from dist1 a left join dist5 b on(a.c1=b.c1) left join dist6 c o
 (1 row)
 
 --
--- 3. 存在迁移任务时，不允许创建colocate_with非none的hash分片表，防止破坏分片表的亲和依赖
+-- 3. 存在迁移任务时，不允许创建hash分片表，防止破坏分片表的亲和依赖以及破坏分片的迁移目标
 --
 -- 创建分片迁移任务
 select jobid from cigration_create_worker_migration_job(:'worker_1_host', :'worker_3_host') limit 1 \gset
--- 创建colocate_with非none的分片表，期待异常
+-- 创建hash分片表，期待异常
 create table dist7(c1 int primary key, c2 text);
 select cigration_create_distributed_table('dist7','c1', colocate_with=>'default');
 ERROR:  create colocated hash distributed table is forbidden during the shard migration.
 HINT:  you could check cigration.pg_citus_shard_migration for existing shard migration tasks.
-CONTEXT:  PL/pgSQL function cigration_create_distributed_table(regclass,text,citus.distribution_type,text) line 13 at RAISE
+CONTEXT:  PL/pgSQL function cigration_create_distributed_table(regclass,text,citus.distribution_type,text) line 17 at RAISE
 select cigration_create_distributed_table('dist7','c1', colocate_with=>'dist1');
 ERROR:  create colocated hash distributed table is forbidden during the shard migration.
 HINT:  you could check cigration.pg_citus_shard_migration for existing shard migration tasks.
-CONTEXT:  PL/pgSQL function cigration_create_distributed_table(regclass,text,citus.distribution_type,text) line 13 at RAISE
--- 创建colocate_with为none的分片表，期待成功
+CONTEXT:  PL/pgSQL function cigration_create_distributed_table(regclass,text,citus.distribution_type,text) line 17 at RAISE
 select cigration_create_distributed_table('dist7','c1', colocate_with=>'none');
- cigration_create_distributed_table 
-------------------------------------
- 
-(1 row)
-
--- 创建append的分片表，期待成功
+ERROR:  create colocated hash distributed table is forbidden during the shard migration.
+HINT:  you could check cigration.pg_citus_shard_migration for existing shard migration tasks.
+CONTEXT:  PL/pgSQL function cigration_create_distributed_table(regclass,text,citus.distribution_type,text) line 17 at RAISE
+-- 创建append分片表，期待成功
 create table dist8(c1 int, c2 text);
 select cigration_create_distributed_table('dist8','c1', distribution_type=>'append');
  cigration_create_distributed_table 
@@ -192,23 +189,8 @@ where logicalrelid::text ~ 'dist7'
 order by nodename,nodeport,logicalrelid,shardminvalue;
    nodename    | nodeport | logicalrelid | shardminvalue | shardmaxvalue 
 ---------------+----------+--------------+---------------+---------------
- worker_2_host |    57638 | dist7        | 0             | 268435455
- worker_2_host |    57638 | dist7        | 1073741824    | 1342177279
- worker_2_host |    57638 | dist7        | -1073741824   | -805306369
- worker_2_host |    57638 | dist7        | 1342177280    | 1610612735
- worker_2_host |    57638 | dist7        | -1342177280   | -1073741825
- worker_2_host |    57638 | dist7        | 1610612736    | 1879048191
- worker_2_host |    57638 | dist7        | -1610612736   | -1342177281
- worker_2_host |    57638 | dist7        | 1879048192    | 2147483647
- worker_2_host |    57638 | dist7        | -1879048192   | -1610612737
- worker_2_host |    57638 | dist7        | -2147483648   | -1879048193
- worker_2_host |    57638 | dist7        | 268435456     | 536870911
- worker_2_host |    57638 | dist7        | -268435456    | -1
- worker_2_host |    57638 | dist7        | 536870912     | 805306367
- worker_2_host |    57638 | dist7        | -536870912    | -268435457
- worker_2_host |    57638 | dist7        | 805306368     | 1073741823
- worker_2_host |    57638 | dist7        | -805306368    | -536870913
-(16 rows)
+ worker_2_host |    57638 | dist7        | -2147483648   | 2147483647
+(1 row)
 
 with t as(
 select min(colocationid) min_colocationid from pg_dist_partition where logicalrelid::text ~ 'dist'
@@ -218,12 +200,12 @@ from pg_dist_partition,t where logicalrelid::text ~ 'dist' order by colocationid
  logicalrelid | partmethod |                                                        partkey                                                         | relative_colocationid 
 --------------+------------+------------------------------------------------------------------------------------------------------------------------+-----------------------
  dist3        | a          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     1
- dist1        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     2
- dist2        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     2
- dist5        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     2
- dist6        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     2
- dist4        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     4
- dist7        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     6
+ dist1        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
+ dist2        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
+ dist5        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
+ dist6        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
+ dist4        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                    11
+ dist7        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                    12
 (7 rows)
 
 select count(*) from dist7;
@@ -233,11 +215,11 @@ select count(*) from dist7;
 (1 row)
 
 --
--- 5. 在指定worker上创建分片(多分片,多worker)
+-- 5. 在指定worker上创建分片(多分片,多worker,特殊表名)
 --
 set citus.shard_count = 8;
-create table dist8(c1 int primary key, c2 text);
-select cigration_create_distributed_table('dist8','c1', ARRAY[:'worker_2_host',:'worker_3_host'], ARRAY[:worker_2_port,:worker_3_port]);
+create table "1234567890123456789012345678901234567890_Maxdist8_0123456789012"(c1 int primary key, c2 text);
+select cigration_create_distributed_table('"1234567890123456789012345678901234567890_Maxdist8_0123456789012"','c1', ARRAY[:'worker_2_host',:'worker_3_host'], ARRAY[:worker_2_port,:worker_3_port]);
  cigration_create_distributed_table 
 ------------------------------------
  
@@ -253,44 +235,36 @@ from pg_dist_shard_placement p
      join pg_dist_shard s on(p.shardid = s.shardid)
 where logicalrelid::text ~ 'dist8'
 order by nodename,nodeport,logicalrelid,shardminvalue;
-   nodename    | nodeport | logicalrelid | shardminvalue | shardmaxvalue 
----------------+----------+--------------+---------------+---------------
- worker_2_host |    57638 | dist8        | -1073741824   | -805306369
- worker_2_host |    57638 | dist8        | 1342177280    | 1610612735
- worker_2_host |    57638 | dist8        | -1342177280   | -1073741825
- worker_2_host |    57638 | dist8        | 1879048192    | 2147483647
- worker_2_host |    57638 | dist8        | -1879048192   | -1610612737
- worker_2_host |    57638 | dist8        | 268435456     | 536870911
- worker_2_host |    57638 | dist8        | -268435456    | -1
- worker_2_host |    57638 | dist8        | 536870912     | 805306367
- worker_3_host |    57639 | dist8        | 0             | 268435455
- worker_3_host |    57639 | dist8        | 1073741824    | 1342177279
- worker_3_host |    57639 | dist8        | 1610612736    | 1879048191
- worker_3_host |    57639 | dist8        | -1610612736   | -1342177281
- worker_3_host |    57639 | dist8        | -2147483648   | -1879048193
- worker_3_host |    57639 | dist8        | -536870912    | -268435457
- worker_3_host |    57639 | dist8        | 805306368     | 1073741823
- worker_3_host |    57639 | dist8        | -805306368    | -536870913
-(16 rows)
+   nodename    | nodeport |                           logicalrelid                            | shardminvalue | shardmaxvalue 
+---------------+----------+-------------------------------------------------------------------+---------------+---------------
+ worker_2_host |    57638 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | 0             | 536870911
+ worker_2_host |    57638 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | 1610612736    | 2147483647
+ worker_2_host |    57638 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | -1610612736   | -1073741825
+ worker_2_host |    57638 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | -536870912    | -1
+ worker_3_host |    57639 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | 1073741824    | 1610612735
+ worker_3_host |    57639 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | -1073741824   | -536870913
+ worker_3_host |    57639 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | -2147483648   | -1610612737
+ worker_3_host |    57639 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | 536870912     | 1073741823
+(8 rows)
 
 with t as(
 select min(colocationid) min_colocationid from pg_dist_partition where logicalrelid::text ~ 'dist'
 )
 select logicalrelid, partmethod, partkey,colocationid - min_colocationid + 1 as relative_colocationid
 from pg_dist_partition,t where logicalrelid::text ~ 'dist' order by colocationid,logicalrelid::text;
- logicalrelid | partmethod |                                                        partkey                                                         | relative_colocationid 
---------------+------------+------------------------------------------------------------------------------------------------------------------------+-----------------------
- dist3        | a          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     1
- dist1        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     2
- dist2        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     2
- dist5        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     2
- dist6        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     2
- dist4        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     4
- dist7        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     6
- dist8        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     7
+                           logicalrelid                            | partmethod |                                                        partkey                                                         | relative_colocationid 
+-------------------------------------------------------------------+------------+------------------------------------------------------------------------------------------------------------------------+-----------------------
+ dist3                                                             | a          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     1
+ dist1                                                             | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
+ dist2                                                             | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
+ dist5                                                             | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
+ dist6                                                             | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
+ dist4                                                             | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                    11
+ dist7                                                             | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                    12
+ "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                    13
 (8 rows)
 
-select count(*) from dist8;
+select count(*) from "1234567890123456789012345678901234567890_Maxdist8_0123456789012";
  count 
 -------
      0
@@ -303,7 +277,7 @@ create table dist9(c1 int primary key, c2 text);
 set citus.shard_replication_factor =2;
 select cigration_create_distributed_table('dist7','c1', ARRAY[:'worker_2_host'], ARRAY[:worker_2_port]);
 ERROR:  citus.shard_replication_factor must be 1
-CONTEXT:  PL/pgSQL function cigration_create_distributed_table(regclass,text,text[],integer[]) line 27 at RAISE
+CONTEXT:  PL/pgSQL function cigration_create_distributed_table(regclass,text,text[],integer[]) line 26 at RAISE
 --
 -- 7. 清理测试环境
 --
