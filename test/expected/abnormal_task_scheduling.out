@@ -106,9 +106,9 @@ select cigration_monitor_shard_migration_task(:jobid, :taskid);
 (1 row)
 
 -- 禁止创建新的迁移作业
-select jobid, taskid from cigration_create_del_node_job(array[:'worker_2_host',:'worker_3_host']);
+select jobid, taskid from cigration_create_worker_empty_job(array[:'worker_2_host',:'worker_3_host']);
 ERROR:  can not create a new job when there are some uncompleted jobs.
-CONTEXT:  PL/pgSQL function cigration_create_del_node_job(text[]) line 16 at RAISE
+CONTEXT:  PL/pgSQL function cigration_create_worker_empty_job(text[]) line 16 at RAISE
 select jobid, taskid from cigration_create_rebalance_job();
 ERROR:  can not create a new job when there are some uncompleted jobs.
 CONTEXT:  PL/pgSQL function cigration_create_rebalance_job() line 16 at RAISE
@@ -124,7 +124,7 @@ ERROR:  only running status is supported,but now is init.
 CONTEXT:  PL/pgSQL function cigration_complete_shard_migration_task(integer,integer,integer,integer,bigint,integer,boolean) line 48 at RAISE
 -- 禁止对非completed迁移任务删除旧分片
 select cigration_drop_old_shard(:jobid, :taskid);
-ERROR:  task [1] in job [1] is not completed.
+ERROR:  task [52] in job [6] is not completed.
 CONTEXT:  PL/pgSQL function cigration_drop_old_shard(integer,integer) line 28 at RAISE
 --
 -- 3. 启动迁移任务（running）
@@ -143,17 +143,17 @@ select status from pg_citus_shard_migration where jobid=:jobid and taskid=:taski
 
 -- 禁止启动running迁移任务
 select cigration_start_shard_migration_task(:jobid, :taskid);
-ERROR:  jobid:[1] task:[1] does not exists or the status is not "init".
+ERROR:  jobid:[6] task:[52] does not exists or the status is not "init".
 CONTEXT:  PL/pgSQL function cigration_start_shard_migration_task(integer,integer,interval,boolean) line 23 at RAISE
 -- 禁止对非completed迁移任务删除旧分片
 select cigration_drop_old_shard(:jobid, :taskid);
-ERROR:  task [1] in job [1] is not completed.
+ERROR:  task [52] in job [6] is not completed.
 CONTEXT:  PL/pgSQL function cigration_drop_old_shard(integer,integer) line 28 at RAISE
 -- 禁止清理running迁移任务
-select cigration_task_cleanup(:jobid, :taskid);
+select cigration_cleanup_shard_migration_task(:jobid, :taskid);
 ERROR:  only the completed,canceled or init task can be archived.
-HINT:  if the task status is error,call function cigration_shard_migration_env_cleanup first.
-CONTEXT:  PL/pgSQL function cigration_task_cleanup(integer,integer) line 21 at RAISE
+HINT:  if the task status is error,call function cigration_cleanup_error_env first.
+CONTEXT:  PL/pgSQL function cigration_cleanup_shard_migration_task(integer,integer) line 21 at RAISE
 --
 -- 4. 取消迁移任务（canceled）
 --
@@ -198,8 +198,8 @@ CONTEXT:  SQL statement "SELECT dblink_connect(dblink_target_con_name,
                                     target_node_port,
                                     current_user,
                                     current_database()))"
-PL/pgSQL function cigration_citus_move_shard_placement(integer,integer,interval,boolean) line 122 at PERFORM
-SQL statement "select cigration.cigration_citus_move_shard_placement(jobid_input,taskid_input,longtime_tx_threshold,ignore_replica_identity_check)"
+PL/pgSQL function cigration_move_shard_placement(integer,integer,interval,boolean) line 108 at PERFORM
+SQL statement "select cigration.cigration_move_shard_placement(jobid_input,taskid_input,longtime_tx_threshold,with_replica_identity_check)"
 PL/pgSQL function cigration_start_shard_migration_task(integer,integer,interval,boolean) line 27 at SQL statement
 select status from pg_citus_shard_migration where jobid=:jobid and taskid=:taskid;
  status 
@@ -215,7 +215,7 @@ select cigration_monitor_shard_migration_task(:jobid, :taskid);
 
 -- 禁止启动取消完成error迁移任务
 select cigration_start_shard_migration_task(:jobid, :taskid);
-ERROR:  jobid:[1] task:[1] does not exists or the status is not "init".
+ERROR:  jobid:[6] task:[52] does not exists or the status is not "init".
 CONTEXT:  PL/pgSQL function cigration_start_shard_migration_task(integer,integer,interval,boolean) line 23 at RAISE
 select cigration_cancel_shard_migration_task(:jobid, :taskid);
 ERROR:  only the task in running status can be canceled.
@@ -225,19 +225,19 @@ ERROR:  only running status is supported,but now is error.
 CONTEXT:  PL/pgSQL function cigration_complete_shard_migration_task(integer,integer,integer,integer,bigint,integer,boolean) line 48 at RAISE
 -- 禁止对非completed迁移任务删除旧分片
 select cigration_drop_old_shard(:jobid, :taskid);
-ERROR:  task [1] in job [1] is not completed.
+ERROR:  task [52] in job [6] is not completed.
 CONTEXT:  PL/pgSQL function cigration_drop_old_shard(integer,integer) line 28 at RAISE
 -- 禁止清理error迁移任务
-select cigration_task_cleanup(:jobid, :taskid);
+select cigration_cleanup_shard_migration_task(:jobid, :taskid);
 ERROR:  only the completed,canceled or init task can be archived.
-HINT:  if the task status is error,call function cigration_shard_migration_env_cleanup first.
-CONTEXT:  PL/pgSQL function cigration_task_cleanup(integer,integer) line 21 at RAISE
+HINT:  if the task status is error,call function cigration_cleanup_error_env first.
+CONTEXT:  PL/pgSQL function cigration_cleanup_shard_migration_task(integer,integer) line 21 at RAISE
 -- 解除故障
 update pg_citus_shard_migration set target_nodename = :'target_nodename' where jobid=:jobid and taskid=:taskid;
 -- 清理环境并恢复到init状态
-select cigration_shard_migration_env_cleanup();
- cigration_shard_migration_env_cleanup 
----------------------------------------
+select cigration_cleanup_error_env();
+ cigration_cleanup_error_env 
+-----------------------------
  
 (1 row)
 
@@ -332,14 +332,14 @@ select cigration_complete_shard_migration_task(:jobid, :taskid);
 ERROR:  only running status is supported,but now is completed.
 CONTEXT:  PL/pgSQL function cigration_complete_shard_migration_task(integer,integer,integer,integer,bigint,integer,boolean) line 48 at RAISE
 select cigration_start_shard_migration_task(:jobid, :taskid);
-ERROR:  jobid:[1] task:[1] does not exists or the status is not "init".
+ERROR:  jobid:[6] task:[52] does not exists or the status is not "init".
 CONTEXT:  PL/pgSQL function cigration_start_shard_migration_task(integer,integer,interval,boolean) line 23 at RAISE
 --
 -- 8. 归档迁移任务（history）
 --
-select cigration_task_cleanup(:jobid, :taskid);
- cigration_task_cleanup 
-------------------------
+select cigration_cleanup_shard_migration_task(:jobid, :taskid);
+ cigration_cleanup_shard_migration_task 
+----------------------------------------
  
 (1 row)
 
@@ -362,15 +362,15 @@ select cigration_complete_shard_migration_task(:jobid, :taskid);
 ERROR:  query returned no rows
 CONTEXT:  PL/pgSQL function cigration_complete_shard_migration_task(integer,integer,integer,integer,bigint,integer,boolean) line 43 at SQL statement
 select cigration_start_shard_migration_task(:jobid, :taskid);
-ERROR:  jobid:[1] task:[1] does not exists or the status is not "init".
+ERROR:  jobid:[6] task:[52] does not exists or the status is not "init".
 CONTEXT:  PL/pgSQL function cigration_start_shard_migration_task(integer,integer,interval,boolean) line 23 at RAISE
 select cigration_drop_old_shard(:jobid, :taskid);
-ERROR:  task [1] in job [1] is not completed.
+ERROR:  task [52] in job [6] is not completed.
 CONTEXT:  PL/pgSQL function cigration_drop_old_shard(integer,integer) line 28 at RAISE
-select cigration_task_cleanup(:jobid, :taskid);
+select cigration_cleanup_shard_migration_task(:jobid, :taskid);
 ERROR:  only the completed,canceled or init task can be archived.
-HINT:  if the task status is error,call function cigration_shard_migration_env_cleanup first.
-CONTEXT:  PL/pgSQL function cigration_task_cleanup(integer,integer) line 21 at RAISE
+HINT:  if the task status is error,call function cigration_cleanup_error_env first.
+CONTEXT:  PL/pgSQL function cigration_cleanup_shard_migration_task(integer,integer) line 21 at RAISE
 --
 -- 9. 归档剩余迁移任务（history）
 --
@@ -397,9 +397,9 @@ select status from pg_citus_shard_migration order by taskid;
  init
 (2 rows)
 
-select cigration_task_cleanup(jobid, taskid) from pg_citus_shard_migration;
- cigration_task_cleanup 
-------------------------
+select cigration_cleanup_shard_migration_task(jobid, taskid) from pg_citus_shard_migration;
+ cigration_cleanup_shard_migration_task 
+----------------------------------------
  
  
 (2 rows)

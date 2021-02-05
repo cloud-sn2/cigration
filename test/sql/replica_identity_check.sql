@@ -41,7 +41,7 @@ order by nodename,nodeport,logicalrelid,shardminvalue;
 -- 创建并执行迁移任务
 select jobid, taskid from cigration_create_worker_migration_job(:'worker_1_host', :'worker_3_host') limit 1 \gset
 
-select cigration_batch_run_migration_tasks(:jobid, with_replica_identity_check=>true);
+select cigration_run_shard_migration_job(:jobid, with_replica_identity_check=>true);
 
 -- 检查迁移任务状态，期待迁移异常
 select source_nodename,source_nodeport,target_nodename,target_nodeport,status,total_shard_count,error_message
@@ -52,10 +52,10 @@ from pg_citus_shard_migration where jobid=:jobid and taskid=:taskid;
 --
 
 -- 清理错误环境
-select cigration_shard_migration_env_cleanup();
+select cigration_cleanup_error_env();
 
 -- 使用默认with_replica_identity_check参数（true）继续执行迁移任务
-select cigration_batch_run_migration_tasks(:jobid);
+select cigration_run_shard_migration_job(:jobid);
 
 select source_nodename,source_nodeport,target_nodename,target_nodeport,status,total_shard_count,error_message
 from pg_citus_shard_migration;
@@ -103,7 +103,7 @@ order by nodename,nodeport,logicalrelid,shardminvalue;
 -- 创建并执行迁移任务
 select jobid, taskid from cigration_create_worker_migration_job(:'worker_1_host', :'worker_3_host') limit 1 \gset
 
-select cigration_batch_run_migration_tasks(:jobid, with_replica_identity_check=>true);
+select cigration_run_shard_migration_job(:jobid, with_replica_identity_check=>true);
 
 select source_nodename,source_nodeport,target_nodename,target_nodeport,status,total_shard_count,error_message
 from pg_citus_shard_migration;

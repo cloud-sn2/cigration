@@ -1294,10 +1294,10 @@ END;
 $cigration_print_log$ LANGUAGE plpgsql;
 
 
-CREATE OR REPLACE FUNCTION cigration.cigration_citus_get_shard_size(shardid_list bigint[])
+CREATE OR REPLACE FUNCTION cigration.cigration_get_shard_size(shardid_list bigint[])
 RETURNS TABLE(shard_nodename text,shard_nodeport int,shard_id bigint,shard_state int,shardidfullrelname text,shard_size bigint)
 -- 
--- 函数名：cigration.cigration_citus_get_shard_size
+-- 函数名：cigration.cigration_get_shard_size
 -- 函数功能：在CN上通过dblink获取指定分片的大小
 -- 参数：shardid bigint[]
 -- 返回值：shard_size
@@ -1311,7 +1311,7 @@ DECLARE
 BEGIN
     -- 执行节点必须是CN节点
     IF (SELECT CASE WHEN (select count(*) from pg_dist_node)>0 THEN (select groupid from pg_dist_local_group) ELSE -1 END) <> 0 THEN
-        RAISE EXCEPTION 'function cigration_citus_get_shard_size could only be executed on coordinate node.';
+        RAISE EXCEPTION 'function cigration_get_shard_size could only be executed on coordinate node.';
     END IF;
     
     -- 入参的非空判断
@@ -1351,10 +1351,10 @@ END;
 $$ LANGUAGE plpgsql;
  
 
-CREATE OR REPLACE FUNCTION cigration.cigration_create_del_node_job(input_source_nodename text[])
+CREATE OR REPLACE FUNCTION cigration.cigration_create_worker_empty_job(input_source_nodename text[])
 RETURNS TABLE(jobid integer,taskid integer,all_colocateion_shards_id bigint[],source_worker text,target_worker text,total_shard_count int,total_shard_size bigint)
 -- 
--- 函数名：cigration.cigration_create_del_node_job
+-- 函数名：cigration.cigration_create_worker_empty_job
 -- 函数功能：创建一个缩容场景的JOB
 -- 参数：source_nodename text[]，形式类似：array['192.168.1.1','192.168.1.2']
 -- 返回值：返回一个包含下面这里列的记录集合
@@ -1370,7 +1370,7 @@ DECLARE
 BEGIN
     --执行节点必须是CN节点
     IF (SELECT CASE WHEN (select count(*) from pg_dist_node)>0 THEN (select groupid from pg_dist_local_group) ELSE -1 END) <> 0 THEN
-        RAISE EXCEPTION 'function cigration_create_del_node_job could only be executed on coordinate node.';
+        RAISE EXCEPTION 'function cigration_create_worker_empty_job could only be executed on coordinate node.';
     END IF;
     
     --检查是否有未完成的JOB
@@ -1393,7 +1393,7 @@ BEGIN
         RAISE EXCEPTION 'some nodenames in the parameter input_source_nodename are not in this citus cluster.';
     end if;
 
-    perform cigration.cigration_print_log('cigration_create_del_node_job','check if workers in this citus cluster are all extended workers.');
+    perform cigration.cigration_print_log('cigration_create_worker_empty_job','check if workers in this citus cluster are all extended workers.');
     -- 如果本次缩容把所有的存储分片表的WK都去掉了，那也有问题，报错退出
     if (select count(*) = 0 from pg_dist_node where shouldhaveshards = true and nodename not in (select unnest(input_source_nodename))) then
         RAISE EXCEPTION 'there are no normal workers left for shards migration after delete %.',input_source_nodename;
@@ -1404,10 +1404,10 @@ BEGIN
     from pg_dist_node
     where nodename not in (select unnest(input_source_nodename)) and shouldhaveshards = true;
     
-    perform cigration.cigration_print_log('cigration_create_del_node_job','get actual source nodenames for function cigration_generate_migration_strategy.');
+    perform cigration.cigration_print_log('cigration_create_worker_empty_job','get actual source nodenames for function cigration_generate_migration_strategy.');
     select array_agg(nodename) into source_nodename_list from pg_dist_node;
     
-    perform cigration.cigration_print_log('cigration_create_del_node_job','call function cigration_generate_migration_strategy to generate a migration job.');
+    perform cigration.cigration_print_log('cigration_create_worker_empty_job','call function cigration_generate_migration_strategy to generate a migration job.');
     select cigration.cigration_generate_migration_strategy(source_nodename_list,target_nodename_list) into var_jobid;
     
     RETURN QUERY select tb.jobid,tb.taskid,tb.all_colocateion_shards_id,tb.source_nodename,tb.target_nodename,tb.total_shard_count,tb.total_shard_size from cigration.pg_citus_shard_migration as tb where tb.jobid = var_jobid;
@@ -1645,7 +1645,7 @@ BEGIN
                     -- 找出这些分片的大小，单位B
                     select sum(result.shard_size),array_agg(result.shard_size)
                     into strict var_total_shard_size,var_all_colocateion_shards_size
-                    from cigration.cigration_citus_get_shard_size(var_all_colocateion_shards_id) as result;
+                    from cigration.cigration_get_shard_size(var_all_colocateion_shards_id) as result;
                     
                     -- 将分区主表加到var_all_colocateion_shards_id列中
                     if ( parent_tbnames is not null ) then
@@ -1772,7 +1772,7 @@ BEGIN
     end if;
     
     -- 调用分片迁移函数，根据函数返回值判断最终的返回值
-    select cigration.cigration_citus_move_shard_placement(jobid_input,taskid_input,longtime_tx_threshold,with_replica_identity_check) into strict shardmove_func_result;
+    select cigration.cigration_move_shard_placement(jobid_input,taskid_input,longtime_tx_threshold,with_replica_identity_check) into strict shardmove_func_result;
     
     if (shardmove_func_result) then
         update cigration.pg_citus_shard_migration set status = 'running',start_time = now() where taskid = taskid_input and jobid = jobid_input;
@@ -2538,19 +2538,19 @@ BEGIN
         if (select count(*) <> 0 from cigration.pg_citus_shard_migration where jobid = jobid_input and status = 'running') then
             raise exception 'some tasks are running in job [%].please cancel the running task first using function: cigration.cigration_cancel_shard_migration_task.',jobid_input;
         elsif (select count(*) <> 0 from cigration.pg_citus_shard_migration where jobid = jobid_input and status = 'error') then
-            raise exception 'some tasks are in error status in job [%].please cleanup the error task first using function: cigration.cigration_shard_migration_env_cleanup.',jobid_input;
+            raise exception 'some tasks are in error status in job [%].please cleanup the error task first using function: cigration.cigration_cleanup_error_env.',jobid_input;
         end if;
         
-        perform cigration.cigration_task_cleanup(jobid,taskid) from cigration.pg_citus_shard_migration where jobid = jobid_input;
+        perform cigration.cigration_cleanup_shard_migration_task(jobid,taskid) from cigration.pg_citus_shard_migration where jobid = jobid_input;
     else
         -- 判断任务状态
         if (select count(*) <> 0 from cigration.pg_citus_shard_migration where jobid = jobid_input and taskid = taskid_input and status = 'running') then
             raise exception 'task [%] is running.please cancel the running task first using function: cigration.cigration_cancel_shard_migration_task.',taskid_input;
         elsif (select count(*) <> 0 from cigration.pg_citus_shard_migration where jobid = jobid_input and taskid = taskid_input and status = 'error') then
-            raise exception 'task [%] is in error status.please cleanup the error task first using function: cigration.cigration_shard_migration_env_cleanup.',taskid_input;
+            raise exception 'task [%] is in error status.please cleanup the error task first using function: cigration.cigration_cleanup_error_env.',taskid_input;
         end if;
         
-        perform cigration.cigration_task_cleanup(jobid_input,taskid_input);
+        perform cigration.cigration_cleanup_shard_migration_task(jobid_input,taskid_input);
     end if;
     
     return 'cancel_succeed';
@@ -2558,19 +2558,19 @@ END;
 $cigration_cancel_shard_migration_job$ LANGUAGE plpgsql;
 
 
-CREATE OR REPLACE FUNCTION cigration.cigration_task_cleanup(jobid_input integer,taskid_input integer)
+CREATE OR REPLACE FUNCTION cigration.cigration_cleanup_shard_migration_task(jobid_input integer,taskid_input integer)
 RETURNS void
 -- 
--- 函数名：cigration.cigration_task_cleanup()
+-- 函数名：cigration.cigration_cleanup_shard_migration_task()
 -- 函数功能：历史任务的归档函数
 -- 参数：jobid_input int 
 -- 返回值：void
 -- 
-AS $cigration_task_cleanup$
+AS $cigration_cleanup_shard_migration_task$
 BEGIN
     -- 执行节点必须是CN节点
     IF (SELECT CASE WHEN (select count(*) from pg_dist_node)>0 THEN (select groupid from pg_dist_local_group) ELSE -1 END) <> 0 THEN
-        RAISE EXCEPTION 'function cigration_task_cleanup could only be executed on coordinate node.';
+        RAISE EXCEPTION 'function cigration_cleanup_shard_migration_task could only be executed on coordinate node.';
     END IF;
     
     if (select status = 'completed' from cigration.pg_citus_shard_migration where jobid = jobid_input and taskid = taskid_input) then
@@ -2587,21 +2587,21 @@ BEGIN
         delete from cigration.pg_citus_shard_migration where jobid = jobid_input and taskid = taskid_input;
     else
         raise exception 'only the completed,canceled or init task can be archived.'
-              USING HINT = 'if the task status is error,call function cigration_shard_migration_env_cleanup first.';
+              USING HINT = 'if the task status is error,call function cigration_cleanup_error_env first.';
     end if;
 END;
-$cigration_task_cleanup$ LANGUAGE plpgsql;
+$cigration_cleanup_shard_migration_task$ LANGUAGE plpgsql;
 
 
-CREATE OR REPLACE FUNCTION cigration.cigration_shard_migration_env_cleanup()
+CREATE OR REPLACE FUNCTION cigration.cigration_cleanup_error_env()
 RETURNS void
 -- 
--- 函数名：cigration.cigration_shard_migration_env_cleanup
+-- 函数名：cigration.cigration_cleanup_error_env
 -- 函数功能：清理分片迁移失败后的残留环境
 -- 参数：无
 -- 返回值：无
 -- 
-AS $cigration_shard_migration_env_cleanup$
+AS $cigration_cleanup_error_env$
 DECLARE
     -- task信息变量
     shardid_list bigint[];
@@ -2633,7 +2633,7 @@ DECLARE
 BEGIN
     -- 执行节点必须是CN节点
     IF (SELECT CASE WHEN (select count(*) from pg_dist_node)>0 THEN (select groupid from pg_dist_local_group) ELSE -1 END) <> 0 THEN
-        RAISE EXCEPTION 'function cigration_shard_migration_env_cleanup could only be executed on coordinate node.';
+        RAISE EXCEPTION 'function cigration_cleanup_error_env could only be executed on coordinate node.';
     END IF;
     
     for task_info in select jobid,taskid,all_colocateion_shards_id,source_nodename,source_nodeport,target_nodename,target_nodeport from cigration.pg_citus_shard_migration where status in ('error','init','canceled')
@@ -2671,7 +2671,7 @@ BEGIN
                     PERFORM dblink_exec(dblink_target_con_name,'DROP SUBSCRIPTION IF EXISTS citus_move_shard_placement_sub CASCADE');
                     
                     execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_node, functionid, sql) values(%L, %L, %L, %L, %L)', 
-                            task_info.jobid, task_info.taskid, task_info.target_nodename, 'cigration.cigration_shard_migration_env_cleanup',
+                            task_info.jobid, task_info.taskid, task_info.target_nodename, 'cigration.cigration_cleanup_error_env',
                             'DROP SUBSCRIPTION IF EXISTS citus_move_shard_placement_sub CASCADE');
                     execute execute_sql;
                 end if;
@@ -2692,7 +2692,7 @@ BEGIN
                     PERFORM dblink_exec(dblink_source_con_name,'DROP PUBLICATION IF EXISTS citus_move_shard_placement_pub CASCADE');
                     
                     execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_node, functionid, sql) values(%L, %L, %L, %L, %L)', 
-                            task_info.jobid, task_info.taskid, task_info.source_nodename, 'cigration.cigration_shard_migration_env_cleanup',
+                            task_info.jobid, task_info.taskid, task_info.source_nodename, 'cigration.cigration_cleanup_error_env',
                             'DROP PUBLICATION IF EXISTS citus_move_shard_placement_pub CASCADE');
                     execute execute_sql;
                 end if;
@@ -2717,7 +2717,7 @@ BEGIN
                         logical_relid, task_info.jobid));
 
                 execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_node, functionid, sql) values(%L, %L, %L, %L, %L)', 
-                        task_info.jobid, task_info.taskid, task_info.target_nodename, 'cigration.cigration_shard_migration_env_cleanup',
+                        task_info.jobid, task_info.taskid, task_info.target_nodename, 'cigration.cigration_cleanup_error_env',
                         format('ALTER TABLE IF EXISTS %s SET SCHEMA cigration_recyclebin_%s', logical_relid, task_info.jobid));
                 execute execute_sql;
                 raise debug 'dblink_target_con_name:%,  logical_relid:%',dblink_target_con_name,logical_relid;
@@ -2726,7 +2726,7 @@ BEGIN
                 PERFORM dblink_exec(dblink_target_con_name,format('DROP TABLE IF EXISTS %s', logical_relid));
                 
                 execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_node, functionid, sql) values(%L, %L, %L, %L, %L)', 
-                        task_info.jobid, task_info.taskid, task_info.target_nodename, 'cigration.cigration_shard_migration_env_cleanup',
+                        task_info.jobid, task_info.taskid, task_info.target_nodename, 'cigration.cigration_cleanup_error_env',
                         format('DROP TABLE IF EXISTS %s', logical_relid));
                 execute execute_sql;
                 -- debug信息
@@ -2768,7 +2768,7 @@ EXCEPTION WHEN QUERY_CANCELED or OTHERS THEN
     
     raise;
 END;
-$cigration_shard_migration_env_cleanup$ LANGUAGE plpgsql;
+$cigration_cleanup_error_env$ LANGUAGE plpgsql;
 
 
 CREATE OR REPLACE FUNCTION cigration.cigration_check_before_migration(jobid_input integer,
@@ -2813,7 +2813,7 @@ BEGIN
     where taskid = taskid_input and jobid = jobid_input;
     
     -- 检查长事务，存在超过阈值的事务就报错退出
-    if (select count(*) > 0 from pg_stat_activity where backend_type = 'client backend' and now() - xact_start >= longtime_tx_threshold and query !~ 'cigration.cigration_batch_run_migration_tasks' and query !~ 'cigration.cigration_complete_shard_migration_task') then
+    if (select count(*) > 0 from pg_stat_activity where backend_type = 'client backend' and now() - xact_start >= longtime_tx_threshold and query !~ 'cigration.cigration_run_shard_migration_job' and query !~ 'cigration.cigration_complete_shard_migration_task') then
         result := 'there are some transactions executed over ' || longtime_tx_threshold || '.';
     end if;
     
@@ -2873,19 +2873,19 @@ $cigration_check_before_migration$ LANGUAGE plpgsql;
 
 
 
-CREATE OR REPLACE FUNCTION cigration.cigration_citus_move_shard_placement(jobid_input integer,
+CREATE OR REPLACE FUNCTION cigration.cigration_move_shard_placement(jobid_input integer,
                                                              taskid_input integer,
                                                              longtime_tx_threshold interval,
                                                              with_replica_identity_check boolean)
 RETURNS boolean
 --  
--- 函数名：cigration.cigration_citus_move_shard_placement
+-- 函数名：cigration.cigration_move_shard_placement
 -- 函数功能：分片迁移函数，用于同步DDL，创建初始逻辑复制同步数据
 -- 参数：jobid_input integer,
 --       taskid_input integer
 -- 返回值：true/false
 --
-AS $cigration_citus_move_shard_placement$
+AS $cigration_move_shard_placement$
 DECLARE
     source_group_id integer;
     target_group_id integer;
@@ -3014,7 +3014,7 @@ BEGIN
                                      (select string_agg(table_name,',') from unnest(shard_fulltablename_array_without_partition) table_name)));
 
         execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_node, functionid, sql) values(%L, %L, %L, %L, %L)', 
-                jobid_input, taskid_input, source_node_name, 'cigration.cigration_citus_move_shard_placement',
+                jobid_input, taskid_input, source_node_name, 'cigration.cigration_move_shard_placement',
                 format('CREATE PUBLICATION citus_move_shard_placement_pub FOR TABLE %s',
                         (select string_agg(table_name,',') from unnest(shard_fulltablename_array_without_partition) table_name)));
         execute execute_sql;
@@ -3080,7 +3080,7 @@ BEGIN
                                          logical_slot_name));
         
         execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_node, functionid, sql) values(%L, %L, %L, %L, %L)', 
-                jobid_input, taskid_input, target_node_name, 'cigration.cigration_citus_move_shard_placement',
+                jobid_input, taskid_input, target_node_name, 'cigration.cigration_move_shard_placement',
                 format($$CREATE SUBSCRIPTION citus_move_shard_placement_sub
                                          CONNECTION 'host=%s port=%s user=%s dbname=%s'
                                          PUBLICATION citus_move_shard_placement_pub with (create_slot = false,slot_name = '%s')$$,
@@ -3118,7 +3118,7 @@ BEGIN
                                     'DROP SUBSCRIPTION IF EXISTS citus_move_shard_placement_sub CASCADE');
         
                 execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_node, functionid, sql) values(%L, %L, %L, %L, %L)', 
-                        jobid_input, taskid_input, target_node_name, 'cigration.cigration_citus_move_shard_placement',
+                        jobid_input, taskid_input, target_node_name, 'cigration.cigration_move_shard_placement',
                         'DROP SUBSCRIPTION IF EXISTS citus_move_shard_placement_sub CASCADE');
                 execute execute_sql;
             EXCEPTION WHEN QUERY_CANCELED or OTHERS THEN
@@ -3133,7 +3133,7 @@ BEGIN
                                 'DROP PUBLICATION IF EXISTS citus_move_shard_placement_pub CASCADE');
         
                 execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_node, functionid, sql) values(%L, %L, %L, %L, %L)', 
-                        jobid_input, taskid_input, source_node_name, 'cigration.cigration_citus_move_shard_placement',
+                        jobid_input, taskid_input, source_node_name, 'cigration.cigration_move_shard_placement',
                         'DROP PUBLICATION IF EXISTS citus_move_shard_placement_pub CASCADE');
                 execute execute_sql;
             EXCEPTION WHEN QUERY_CANCELED or OTHERS THEN
@@ -3156,7 +3156,7 @@ BEGIN
                                          shard_fulltablename_array[i]));
         
                     execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_node, functionid, sql) values(%L, %L, %L, %L, %L)', 
-                            jobid_input, taskid_input, target_node_name, 'cigration.cigration_citus_move_shard_placement',
+                            jobid_input, taskid_input, target_node_name, 'cigration.cigration_move_shard_placement',
                             format('DROP TABLE IF EXISTS %s', shard_fulltablename_array[i]));
                     execute execute_sql;
                 EXCEPTION WHEN QUERY_CANCELED or OTHERS THEN
@@ -3180,7 +3180,7 @@ BEGIN
         
         RAISE;
 END;
-$cigration_citus_move_shard_placement$ 
+$cigration_move_shard_placement$ 
 LANGUAGE plpgsql;
 
 
@@ -3379,7 +3379,7 @@ BEGIN
     END IF;
 
     --去除同源或同目标
-    RETURN QUERY    select format('select cigration_batch_run_migration_tasks(%s, ''%s'', %s);', current_jobid, taskids, init_sync_timeout)
+    RETURN QUERY    select format('select cigration_run_shard_migration_job(%s, ''%s'', %s);', current_jobid, taskids, init_sync_timeout)
                     from
                     (
                         WITH citus_shard_migration_all AS 
@@ -3394,13 +3394,13 @@ BEGIN
 END;
 $cigration_generate_parallel_schedule$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION cigration.cigration_batch_run_migration_tasks(jobid_input int, taskids int[] default NULL,
+CREATE OR REPLACE FUNCTION cigration.cigration_run_shard_migration_job(jobid_input int, taskids int[] default NULL,
                                                                          init_sync_timeout int default 7200,
                                                                          longtime_tx_threshold interval default '30 min',
                                                                          with_replica_identity_check boolean default false)
 RETURNS boolean
 -- 
--- 函数名：cigration.cigration_batch_run_migration_tasks
+-- 函数名：cigration.cigration_run_shard_migration_job
 -- 函数功能：对指定的jobid及taskid执行迁移任务
 -- 参数：
 --      jobid_input                 : jobid信息
@@ -3410,7 +3410,7 @@ RETURNS boolean
 --      with_replica_identity_check : 任务启动时是否检查replica_identity
 -- 返回值：无
 -- 
-AS $cigration_batch_run_migration_tasks$
+AS $cigration_run_shard_migration_job$
 DECLARE
     target_taskids integer[];
     recordinfo record;
@@ -3429,7 +3429,7 @@ DECLARE
 BEGIN
     --执行节点必须是CN节点
     IF (SELECT CASE WHEN (select count(*) from pg_dist_node)>0 THEN (select groupid from pg_dist_local_group) ELSE -1 END) <> 0 THEN
-        RAISE EXCEPTION 'function cigration_batch_run_migration_tasks could only be executed on coordinate node.';
+        RAISE EXCEPTION 'function cigration_run_shard_migration_job could only be executed on coordinate node.';
     END IF;
 
     IF (taskids is null) THEN
@@ -3451,7 +3451,7 @@ BEGIN
     for recordinfo in SELECT taskid, source_nodename, target_nodename, status, error_message, total_shard_size from cigration.pg_citus_shard_migration where jobid=jobid_input and taskid in (select unnest(target_taskids)) ORDER BY taskid loop
         --check task status
         IF recordinfo.status = 'error' THEN
-            raise 'Task[%] of job[%] is in error status because of ''%''. Please calling ''SELECT cigration.cigration_shard_migration_env_cleanup()'' to cleanup!', recordinfo.taskid, jobid_input, recordinfo.error_message;
+            raise 'Task[%] of job[%] is in error status because of ''%''. Please calling ''SELECT cigration.cigration_cleanup_error_env()'' to cleanup!', recordinfo.taskid, jobid_input, recordinfo.error_message;
         ELSIF recordinfo.status = 'canceled' THEN
             canceled_task_cnt := canceled_task_cnt + 1;
             canceled_task_size := canceled_task_size + recordinfo.total_shard_size;
@@ -3465,9 +3465,9 @@ BEGIN
         --create dblink connection
         PERFORM dblink_disconnect(con) 
         FROM (select unnest(a) con from dblink_get_connections() a)b 
-        WHERE con = 'cigration_batch_run_migration_tasks';
+        WHERE con = 'cigration_run_shard_migration_job';
 
-        PERFORM dblink_connect('cigration_batch_run_migration_tasks',
+        PERFORM dblink_connect('cigration_run_shard_migration_job',
                                 format('host=%s port=%s user=%s dbname=%s',
                                         '127.0.0.1',
                                         icurrentnode_port,
@@ -3479,7 +3479,7 @@ BEGIN
         BEGIN
             IF recordinfo.status = 'init' THEN
                 --start migration
-                EXECUTE format($$SELECT * FROM dblink('cigration_batch_run_migration_tasks', 
+                EXECUTE format($$SELECT * FROM dblink('cigration_run_shard_migration_job', 
                                                       $sql$SELECT cigration.cigration_start_shard_migration_task(%s, %s, longtime_tx_threshold=>'%s', with_replica_identity_check=>'%s')$sql$
                                                       ) AS t(result_record text)$$,
                                 jobid_input, recordinfo.taskid, longtime_tx_threshold, with_replica_identity_check);
@@ -3489,20 +3489,20 @@ BEGIN
             IF recordinfo.status in ('init', 'running') THEN
                 --complete migration
                 SELECT exec_result into STRICT exec_result_msg
-                    from dblink('cigration_batch_run_migration_tasks', 
+                    from dblink('cigration_run_shard_migration_job', 
                                        format('SELECT cigration.cigration_complete_shard_migration_task(%s, %s, init_sync_timeout=>%s)',
                                        jobid_input, recordinfo.taskid, init_sync_timeout)) t(exec_result text);
 
                 -- checking the execute result of cigration_complete_shard_migration_task
                 IF exec_result_msg != 'complete' THEN
-                    raise warning 'Method cigration.cigration_complete_shard_migration_task(%, %, init_sync_timeout=>%) finished with ''%'' when migrating from % to %, please calling ''cigration.cigration_batch_run_migration_tasks'' again!', jobid_input, recordinfo.taskid, init_sync_timeout, exec_result_msg, recordinfo.source_nodename, recordinfo.target_nodename;
+                    raise warning 'Method cigration.cigration_complete_shard_migration_task(%, %, init_sync_timeout=>%) finished with ''%'' when migrating from % to %, please calling ''cigration.cigration_run_shard_migration_job'' again!', jobid_input, recordinfo.taskid, init_sync_timeout, exec_result_msg, recordinfo.source_nodename, recordinfo.target_nodename;
                     return false;
                 END IF;
             END IF;
 
             --cleanup migration
-            EXECUTE format($$SELECT * FROM dblink('cigration_batch_run_migration_tasks', 
-                                                  'SELECT cigration.cigration_task_cleanup(%s, %s)'
+            EXECUTE format($$SELECT * FROM dblink('cigration_run_shard_migration_job', 
+                                                  'SELECT cigration.cigration_cleanup_shard_migration_task(%s, %s)'
                                                   ) AS t(result_record text)$$,
                             jobid_input, recordinfo.taskid);
 
@@ -3522,7 +3522,7 @@ BEGIN
         EXCEPTION WHEN QUERY_CANCELED or OTHERS THEN
             IF dblink_created THEN
                 BEGIN
-                    PERFORM dblink_disconnect('cigration_batch_run_migration_tasks');
+                    PERFORM dblink_disconnect('cigration_run_shard_migration_job');
                 EXCEPTION WHEN QUERY_CANCELED or OTHERS THEN
                     GET STACKED DIAGNOSTICS error_msg = MESSAGE_TEXT;
                     RAISE WARNING 'failed to call dblink_disconnect:%', error_msg;
@@ -3535,7 +3535,7 @@ BEGIN
         --cleanup
         --每次循环都重新获取dblink
         BEGIN
-            PERFORM dblink_disconnect('cigration_batch_run_migration_tasks');
+            PERFORM dblink_disconnect('cigration_run_shard_migration_job');
         EXCEPTION WHEN QUERY_CANCELED or OTHERS THEN
             GET STACKED DIAGNOSTICS error_msg = MESSAGE_TEXT;
             RAISE WARNING 'failed to call dblink_disconnect:%', error_msg;
@@ -3544,7 +3544,7 @@ BEGIN
     --all task migration complete
     return true;
 END;
-$cigration_batch_run_migration_tasks$ LANGUAGE plpgsql;
+$cigration_run_shard_migration_job$ LANGUAGE plpgsql;
 
 -- 
 -- Judge table structure

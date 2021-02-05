@@ -46,7 +46,7 @@ cigration的主要功能就是在Citus Worker节点间在线迁移分片，迁�
 
 注：上的`sn_`前缀实际应该是`cigration_`前缀
 
-对于中途出错的任务，可以通过调用函数`cigration_shard_migration_env_cleanup()`，将其变回到初始的init状态，再继续执行。
+对于中途出错的任务，可以通过调用函数`cigration_cleanup_error_env()`，将其变回到初始的init状态，再继续执行。
 
 
 
@@ -81,7 +81,7 @@ sudo PATH=/usr/pgsql-12/bin:$PATH make install
 也可以通过拷贝文件的方式安装,比如
 
 ```
-cp cigration.control cigration--*.sql /usr/pgsql-12/share/extension/
+sudo cp cigration.control cigration--*.sql /usr/pgsql-12/share/extension/
 ```
 
 连接CN节点安装cigration扩展
@@ -217,7 +217,7 @@ error_message               |
 代入前面生成的作业的jobid，执行迁移作业
 
 ```
-select cigration.cigration_batch_run_migration_tasks(1);
+select cigration.cigration_run_shard_migration_job(1);
 ```
 
 函数执行过程中会实时输出迁移进度
@@ -225,7 +225,7 @@ select cigration.cigration_batch_run_migration_tasks(1);
 ```
 NOTICE:  2021-01-15 00:05:11.851703+08 [1/2] migration task 1 completed. (processed/total/percent: 896 kB/1792 kB/50 %)
 NOTICE:  2021-01-15 00:05:19.732616+08 [2/2] migration task 2 completed. (processed/total/percent: 1792 kB/1792 kB/100 %)
- cigration_batch_run_migration_tasks
+ cigration_run_shard_migration_job
 -------------------------------------
  t
 (1 row)
@@ -268,17 +268,17 @@ select cigration.cigration_cleanup_recyclebin(1);
 
 | **函数名称**                            | **返回类型** | **描述**                                    |
 | --------------------------------------- | ------------ | ------------------------------------------- |
-| cigration_create_del_node_job           | record       | 创建缩容分片迁移作业                        |
+| cigration_create_worker_empty_job           | record       | 创建缩容分片迁移作业                        |
 | cigration_create_rebalance_job          | record       | 创建再均衡分片迁移作业                      |
 | cigration_create_worker_migration_job   | record       | 创建worker替换的分片迁移作业                |
-| cigration_batch_run_migration_tasks     | boolean      | 执行分片迁移作业                            |
+| cigration_run_shard_migration_job     | boolean      | 执行分片迁移作业                            |
 | cigration_cleanup_recyclebin            | void         | 清理旧分片                                  |
 | cigration_cancel_shard_migration_job    | text         | 取消分片迁移作业                            |
 | cigration_generate_parallel_schedule    | record       | 对指定的分片迁移作业生成可并行调度的执行SQL |
 | cigration_start_shard_migration_task    | text         | 启动单个迁移任务                            |
 | cigration_complete_shard_migration_task | text         | 完成单个迁移任务                            |
 | cigration_cancel_shard_migration_task   | text         | 取消单个迁移任务                            |
-| cigration_shard_migration_env_cleanup   | void         | 清理分片迁移失败后的残留环境                |
+| cigration_cleanup_error_env  | void         | 清理分片迁移失败后的残留环境                |
 
 
 
@@ -309,7 +309,7 @@ end_time                    |
 error_message 
 ```
 
-每个任务有5种状态(status)，
+每个任务有5种状态(status)
 
 - init
   - 初始任务状态
@@ -320,7 +320,7 @@ error_message
 - error
   - 中途出错的任务。调用`cigration_cleanup_recyclebin()`做清理操作后，可以回到init状态，继续执行。
 - canceled
-  - 被主动取消任务。可以调用`cigration_start_shard_migration_task()`继续开始
+  - 被主动取消的任务。可以调用`cigration_start_shard_migration_task()`继续开始
 
 ### 5.2 `cigration.pg_citus_shard_migration_history`
 
@@ -356,7 +356,7 @@ id           | 23
 jobid        | 1
 taskid       | 2
 execute_node | worker2
-functionid   | cigration.cigration_citus_move_shard_placement
+functionid   | cigration.cigration_move_shard_placement
 sql          | CREATE PUBLICATION citus_move_shard_placement_pub FOR TABLE public.tb1_102715,public.tb2_102723
 execute_time | 2021-01-15 00:05:11.869576
 -[ RECORD 16 ]-------------------------------------------------------------------------------------------------------------------------
@@ -365,7 +365,7 @@ id           | 24
 jobid        | 1
 taskid       | 2
 execute_node | worker3
-functionid   | cigration.cigration_citus_move_shard_placement
+functionid   | cigration.cigration_move_shard_placement
 sql          | CREATE SUBSCRIPTION citus_move_shard_placement_sub
                  +
              |    CONNECTION 'host=worker2 port=5432 user=postgres dbname=postgres'

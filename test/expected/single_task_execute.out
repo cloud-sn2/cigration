@@ -301,9 +301,9 @@ select count(*) from dist1 a left join dist2 b on(a.c1=b.c1) left join dist3 c o
 (1 row)
 
 -- 重置被取消的迁移任务
-select cigration_shard_migration_env_cleanup();
- cigration_shard_migration_env_cleanup 
----------------------------------------
+select cigration_cleanup_error_env();
+ cigration_cleanup_error_env 
+-----------------------------
  
 (1 row)
 
@@ -371,9 +371,9 @@ order by nodename,nodeport,logicalrelid,shardminvalue;
 (24 rows)
 
 -- 归档迁移任务
-select cigration_task_cleanup(:jobid, :taskid);
- cigration_task_cleanup 
-------------------------
+select cigration_cleanup_shard_migration_task(:jobid, :taskid);
+ cigration_cleanup_shard_migration_task 
+----------------------------------------
  
 (1 row)
 
@@ -397,9 +397,9 @@ select count(*) from pg_citus_shard_migration;
      2
 (1 row)
 
-select cigration_task_cleanup(jobid, taskid) from pg_citus_shard_migration;
- cigration_task_cleanup 
-------------------------
+select cigration_cleanup_shard_migration_task(jobid, taskid) from pg_citus_shard_migration;
+ cigration_cleanup_shard_migration_task 
+----------------------------------------
  
  
 (2 rows)

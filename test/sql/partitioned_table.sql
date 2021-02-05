@@ -86,7 +86,7 @@ select jobid from cigration_create_worker_migration_job(:'worker_1_host', :'work
 select source_nodename,source_nodeport,target_nodename,target_nodeport,status,total_shard_count
 from pg_citus_shard_migration;
 
-select cigration_batch_run_migration_tasks(:jobid);
+select cigration_run_shard_migration_job(:jobid);
 
 select nodename,
        nodeport,
@@ -104,7 +104,7 @@ select count(*) from dist1 a left join dist2 b on(a.c1=b.c1) left join dist3 c o
 -- 分片再平衡(扩容)
 select jobid from cigration_create_rebalance_job() limit 1 \gset
 
-select cigration_batch_run_migration_tasks(:jobid);
+select cigration_run_shard_migration_job(:jobid);
 
 select nodename,
        nodeport,
@@ -123,9 +123,9 @@ select count(*) from dist1 a
   left join "1234567890123456789012345678901234567890_Maxdist4_0123456789012" d on (a.c1=d.c1);
 
 -- 从worker2和worker3迁移走所有分片（缩容）
-select jobid from cigration_create_del_node_job(array[:'worker_2_host',:'worker_3_host']) limit 1 \gset
+select jobid from cigration_create_worker_empty_job(array[:'worker_2_host',:'worker_3_host']) limit 1 \gset
 
-select cigration_batch_run_migration_tasks(:jobid);
+select cigration_run_shard_migration_job(:jobid);
 
 select nodename,
        nodeport,
@@ -146,7 +146,7 @@ select count(*) from dist1 a
 -- 分片再平衡(扩容)
 select jobid from cigration_create_rebalance_job() limit 1 \gset
 
-select cigration_batch_run_migration_tasks(:jobid);
+select cigration_run_shard_migration_job(:jobid);
 
 select nodename,
        nodeport,

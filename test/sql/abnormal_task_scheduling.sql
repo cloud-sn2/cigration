@@ -61,7 +61,7 @@ select status from pg_citus_shard_migration where jobid=:jobid and taskid=:taski
 select cigration_monitor_shard_migration_task(:jobid, :taskid);
 
 -- 禁止创建新的迁移作业
-select jobid, taskid from cigration_create_del_node_job(array[:'worker_2_host',:'worker_3_host']);
+select jobid, taskid from cigration_create_worker_empty_job(array[:'worker_2_host',:'worker_3_host']);
 select jobid, taskid from cigration_create_rebalance_job();
 select jobid, taskid from cigration_create_worker_migration_job(:'worker_1_host', :'worker_3_host');
 
@@ -86,7 +86,7 @@ select cigration_start_shard_migration_task(:jobid, :taskid);
 select cigration_drop_old_shard(:jobid, :taskid);
 
 -- 禁止清理running迁移任务
-select cigration_task_cleanup(:jobid, :taskid);
+select cigration_cleanup_shard_migration_task(:jobid, :taskid);
 
 
 --
@@ -124,13 +124,13 @@ select cigration_complete_shard_migration_task(:jobid, :taskid);
 select cigration_drop_old_shard(:jobid, :taskid);
 
 -- 禁止清理error迁移任务
-select cigration_task_cleanup(:jobid, :taskid);
+select cigration_cleanup_shard_migration_task(:jobid, :taskid);
 
 -- 解除故障
 update pg_citus_shard_migration set target_nodename = :'target_nodename' where jobid=:jobid and taskid=:taskid;
 
 -- 清理环境并恢复到init状态
-select cigration_shard_migration_env_cleanup();
+select cigration_cleanup_error_env();
 select status from pg_citus_shard_migration where jobid=:jobid and taskid=:taskid;
 
 
@@ -179,7 +179,7 @@ select cigration_start_shard_migration_task(:jobid, :taskid);
 --
 -- 8. 归档迁移任务（history）
 --
-select cigration_task_cleanup(:jobid, :taskid);
+select cigration_cleanup_shard_migration_task(:jobid, :taskid);
 select status from pg_citus_shard_migration where jobid=:jobid and taskid=:taskid;
 select status from pg_citus_shard_migration_history where jobid=:jobid and taskid=:taskid;
 
@@ -188,7 +188,7 @@ select cigration_cancel_shard_migration_task(:jobid, :taskid);
 select cigration_complete_shard_migration_task(:jobid, :taskid);
 select cigration_start_shard_migration_task(:jobid, :taskid);
 select cigration_drop_old_shard(:jobid, :taskid);
-select cigration_task_cleanup(:jobid, :taskid);
+select cigration_cleanup_shard_migration_task(:jobid, :taskid);
 
 
 --
@@ -205,7 +205,7 @@ from pg_citus_shard_migration order by taskid limit 1;
 -- 归档所有剩余迁移任务
 select status from pg_citus_shard_migration order by taskid;
 
-select cigration_task_cleanup(jobid, taskid) from pg_citus_shard_migration;
+select cigration_cleanup_shard_migration_task(jobid, taskid) from pg_citus_shard_migration;
 
 -- 归档所有剩余迁移任务到历史任务表
 select count(*) from pg_citus_shard_migration;

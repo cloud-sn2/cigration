@@ -49,14 +49,14 @@ order by nodename,nodeport,logicalrelid,shardminvalue;
 
 -- 创建并执行迁移任务
 select jobid, taskid from cigration_create_worker_migration_job(:'worker_1_host', :'worker_3_host') limit 1 \gset
-select cigration_batch_run_migration_tasks(:jobid, with_replica_identity_check=>true);
+select cigration_run_shard_migration_job(:jobid, with_replica_identity_check=>true);
 ERROR:  task 71 in job 11 start failed.check errors in the task_info table:cigration.pg_citus_shard_migration.
 CONTEXT:  PL/pgSQL function cigration.cigration_start_shard_migration_task(integer,integer,interval,boolean) line 33 at RAISE
-while executing query on dblink connection named "cigration_batch_run_migration_tasks"
-SQL statement "SELECT * FROM dblink('cigration_batch_run_migration_tasks', 
+while executing query on dblink connection named "cigration_run_shard_migration_job"
+SQL statement "SELECT * FROM dblink('cigration_run_shard_migration_job', 
                                                       $sql$SELECT cigration.cigration_start_shard_migration_task(11, 71, longtime_tx_threshold=>'@ 30 mins', with_replica_identity_check=>'t')$sql$
                                                       ) AS t(result_record text)"
-PL/pgSQL function cigration_batch_run_migration_tasks(integer,integer[],integer,interval,boolean) line 70 at EXECUTE
+PL/pgSQL function cigration_run_shard_migration_job(integer,integer[],integer,interval,boolean) line 70 at EXECUTE
 -- 检查迁移任务状态，期待迁移异常
 select source_nodename,source_nodeport,target_nodename,target_nodeport,status,total_shard_count,error_message
 from pg_citus_shard_migration where jobid=:jobid and taskid=:taskid;
@@ -69,16 +69,16 @@ from pg_citus_shard_migration where jobid=:jobid and taskid=:taskid;
 -- 2. 无主键分片表的迁移(with_replica_identity_check=false)
 --
 -- 清理错误环境
-select cigration_shard_migration_env_cleanup();
- cigration_shard_migration_env_cleanup 
----------------------------------------
+select cigration_cleanup_error_env();
+ cigration_cleanup_error_env 
+-----------------------------
  
 (1 row)
 
 -- 使用默认with_replica_identity_check参数（true）继续执行迁移任务
-select cigration_batch_run_migration_tasks(:jobid);
- cigration_batch_run_migration_tasks 
--------------------------------------
+select cigration_run_shard_migration_job(:jobid);
+ cigration_run_shard_migration_job 
+-----------------------------------
  t
 (1 row)
 
@@ -156,9 +156,9 @@ order by nodename,nodeport,logicalrelid,shardminvalue;
 
 -- 创建并执行迁移任务
 select jobid, taskid from cigration_create_worker_migration_job(:'worker_1_host', :'worker_3_host') limit 1 \gset
-select cigration_batch_run_migration_tasks(:jobid, with_replica_identity_check=>true);
- cigration_batch_run_migration_tasks 
--------------------------------------
+select cigration_run_shard_migration_job(:jobid, with_replica_identity_check=>true);
+ cigration_run_shard_migration_job 
+-----------------------------------
  t
 (1 row)
 

@@ -135,7 +135,7 @@ order by nodename,nodeport,logicalrelid,shardminvalue;
 select count(*) from dist1 a left join dist2 b on(a.c1=b.c1) left join dist3 c on (a.c1=c.c1);
 
 -- 重置被取消的迁移任务
-select cigration_shard_migration_env_cleanup();
+select cigration_cleanup_error_env();
 select cigration_monitor_shard_migration_task(:jobid, :taskid);
 select status from pg_citus_shard_migration where jobid=:jobid and taskid=:taskid;
 
@@ -155,7 +155,7 @@ where logicalrelid::text ~ 'dist'
 order by nodename,nodeport,logicalrelid,shardminvalue;
 
 -- 归档迁移任务
-select cigration_task_cleanup(:jobid, :taskid);
+select cigration_cleanup_shard_migration_task(:jobid, :taskid);
 
 select source_nodename,source_nodeport,target_nodename,target_nodeport,status,total_shard_count
 from pg_citus_shard_migration where jobid=:jobid and taskid=:taskid;
@@ -165,7 +165,7 @@ from pg_citus_shard_migration_history where jobid=:jobid and taskid=:taskid;
 
 -- 清除pg_citus_shard_migration中的所有未启动的任务
 select count(*) from pg_citus_shard_migration;
-select cigration_task_cleanup(jobid, taskid) from pg_citus_shard_migration;
+select cigration_cleanup_shard_migration_task(jobid, taskid) from pg_citus_shard_migration;
 select count(*) from pg_citus_shard_migration;
 
 --
