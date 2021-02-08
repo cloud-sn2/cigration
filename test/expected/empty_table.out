@@ -34,23 +34,23 @@ from pg_dist_shard_placement p
      join pg_dist_shard s on(p.shardid = s.shardid)
 where logicalrelid::text ~ 'dist'
 order by nodename,nodeport,logicalrelid,shardminvalue;
-   nodename    | nodeport | logicalrelid | shardminvalue | shardmaxvalue 
----------------+----------+--------------+---------------+---------------
- worker_1_host |    57637 | dist1        | 1073741824    | 1610612735
- worker_1_host |    57637 | dist1        | -2147483648   | -1610612737
- worker_1_host |    57637 | dist1        | -536870912    | -1
- worker_2_host |    57638 | dist1        | 0             | 536870911
- worker_2_host |    57638 | dist1        | 1610612736    | 2147483647
- worker_2_host |    57638 | dist1        | -1610612736   | -1073741825
- worker_3_host |    57639 | dist1        | -1073741824   | -536870913
- worker_3_host |    57639 | dist1        | 536870912     | 1073741823
+ nodename  | nodeport | logicalrelid | shardminvalue | shardmaxvalue 
+-----------+----------+--------------+---------------+---------------
+ localhost |    57637 | dist1        | 1073741824    | 1610612735
+ localhost |    57637 | dist1        | -2147483648   | -1610612737
+ localhost |    57637 | dist1        | -536870912    | -1
+ localhost |    57638 | dist1        | 0             | 536870911
+ localhost |    57638 | dist1        | 1610612736    | 2147483647
+ localhost |    57638 | dist1        | -1610612736   | -1073741825
+ localhost |    57639 | dist1        | -1073741824   | -536870913
+ localhost |    57639 | dist1        | 536870912     | 1073741823
 (8 rows)
 
 --
 -- 2. 分片迁移
 --
 -- 迁移worker1的所有分片到worker3（worker迁移）
-select jobid from cigration_create_worker_migration_job(:'worker_1_host', :'worker_3_host') limit 1 \gset
+select jobid from cigration_create_worker_migration_job(:'worker_1_host', :worker_1_port, :'worker_3_host', :worker_3_port) limit 1 \gset
 select cigration_run_shard_migration_job(:jobid);
  cigration_run_shard_migration_job 
 -----------------------------------
@@ -66,16 +66,16 @@ from pg_dist_shard_placement p
      join pg_dist_shard s on(p.shardid = s.shardid)
 where logicalrelid::text ~ 'dist'
 order by nodename,nodeport,logicalrelid,shardminvalue;
-   nodename    | nodeport | logicalrelid | shardminvalue | shardmaxvalue 
----------------+----------+--------------+---------------+---------------
- worker_2_host |    57638 | dist1        | 0             | 536870911
- worker_2_host |    57638 | dist1        | 1610612736    | 2147483647
- worker_2_host |    57638 | dist1        | -1610612736   | -1073741825
- worker_3_host |    57639 | dist1        | 1073741824    | 1610612735
- worker_3_host |    57639 | dist1        | -1073741824   | -536870913
- worker_3_host |    57639 | dist1        | -2147483648   | -1610612737
- worker_3_host |    57639 | dist1        | 536870912     | 1073741823
- worker_3_host |    57639 | dist1        | -536870912    | -1
+ nodename  | nodeport | logicalrelid | shardminvalue | shardmaxvalue 
+-----------+----------+--------------+---------------+---------------
+ localhost |    57638 | dist1        | 0             | 536870911
+ localhost |    57638 | dist1        | 1610612736    | 2147483647
+ localhost |    57638 | dist1        | -1610612736   | -1073741825
+ localhost |    57639 | dist1        | 1073741824    | 1610612735
+ localhost |    57639 | dist1        | -1073741824   | -536870913
+ localhost |    57639 | dist1        | -2147483648   | -1610612737
+ localhost |    57639 | dist1        | 536870912     | 1073741823
+ localhost |    57639 | dist1        | -536870912    | -1
 (8 rows)
 
 -- 检查分片迁移后SQL执行正常
@@ -92,11 +92,11 @@ select nodename,nodeport,count(*)
 from cigration_get_recyclebin_metadata()
 group by nodename,nodeport
 order by nodename,nodeport;
-   nodename    | nodeport | count 
----------------+----------+-------
- worker_1_host |    57637 |     1
- worker_2_host |    57638 |     1
- worker_3_host |    57639 |     1
+ nodename  | nodeport | count 
+-----------+----------+-------
+ localhost |    57637 |     1
+ localhost |    57638 |     1
+ localhost |    57639 |     1
 (3 rows)
 
 select cigration_cleanup_recyclebin();

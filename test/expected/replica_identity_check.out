@@ -35,20 +35,20 @@ select nodename,
 from pg_dist_shard_placement p
      join pg_dist_shard s on(p.shardid = s.shardid)
 order by nodename,nodeport,logicalrelid,shardminvalue;
-   nodename    | nodeport | logicalrelid | shardminvalue | shardmaxvalue 
----------------+----------+--------------+---------------+---------------
- worker_1_host |    57637 | nopk_tb1     | 1073741824    | 1610612735
- worker_1_host |    57637 | nopk_tb1     | -2147483648   | -1610612737
- worker_1_host |    57637 | nopk_tb1     | -536870912    | -1
- worker_2_host |    57638 | nopk_tb1     | 0             | 536870911
- worker_2_host |    57638 | nopk_tb1     | 1610612736    | 2147483647
- worker_2_host |    57638 | nopk_tb1     | -1610612736   | -1073741825
- worker_3_host |    57639 | nopk_tb1     | -1073741824   | -536870913
- worker_3_host |    57639 | nopk_tb1     | 536870912     | 1073741823
+ nodename  | nodeport | logicalrelid | shardminvalue | shardmaxvalue 
+-----------+----------+--------------+---------------+---------------
+ localhost |    57637 | nopk_tb1     | 1073741824    | 1610612735
+ localhost |    57637 | nopk_tb1     | -2147483648   | -1610612737
+ localhost |    57637 | nopk_tb1     | -536870912    | -1
+ localhost |    57638 | nopk_tb1     | 0             | 536870911
+ localhost |    57638 | nopk_tb1     | 1610612736    | 2147483647
+ localhost |    57638 | nopk_tb1     | -1610612736   | -1073741825
+ localhost |    57639 | nopk_tb1     | -1073741824   | -536870913
+ localhost |    57639 | nopk_tb1     | 536870912     | 1073741823
 (8 rows)
 
 -- 创建并执行迁移任务
-select jobid, taskid from cigration_create_worker_migration_job(:'worker_1_host', :'worker_3_host') limit 1 \gset
+select jobid, taskid from cigration_create_worker_migration_job(:'worker_1_host', :worker_1_port, :'worker_3_host', :worker_3_port) limit 1 \gset
 select cigration_run_shard_migration_job(:jobid, with_replica_identity_check=>true);
 ERROR:  task 71 in job 11 start failed.check errors in the task_info table:cigration.pg_citus_shard_migration.
 CONTEXT:  PL/pgSQL function cigration.cigration_start_shard_migration_task(integer,integer,interval,boolean) line 33 at RAISE
@@ -62,7 +62,7 @@ select source_nodename,source_nodeport,target_nodename,target_nodeport,status,to
 from pg_citus_shard_migration where jobid=:jobid and taskid=:taskid;
  source_nodename | source_nodeport | target_nodename | target_nodeport | status | total_shard_count |                            error_message                             
 -----------------+-----------------+-----------------+-----------------+--------+-------------------+----------------------------------------------------------------------
- worker_1_host   |           57637 | worker_3_host   |           57639 | error  |                 1 | it does not has a replica identity or it does not has a primary key.
+ localhost       |           57637 | localhost       |           57639 | error  |                 1 | it does not has a replica identity or it does not has a primary key.
 (1 row)
 
 --
@@ -97,16 +97,16 @@ select nodename,
 from pg_dist_shard_placement p
      join pg_dist_shard s on(p.shardid = s.shardid)
 order by nodename,nodeport,logicalrelid,shardminvalue;
-   nodename    | nodeport | logicalrelid | shardminvalue | shardmaxvalue 
----------------+----------+--------------+---------------+---------------
- worker_2_host |    57638 | nopk_tb1     | 0             | 536870911
- worker_2_host |    57638 | nopk_tb1     | 1610612736    | 2147483647
- worker_2_host |    57638 | nopk_tb1     | -1610612736   | -1073741825
- worker_3_host |    57639 | nopk_tb1     | 1073741824    | 1610612735
- worker_3_host |    57639 | nopk_tb1     | -1073741824   | -536870913
- worker_3_host |    57639 | nopk_tb1     | -2147483648   | -1610612737
- worker_3_host |    57639 | nopk_tb1     | 536870912     | 1073741823
- worker_3_host |    57639 | nopk_tb1     | -536870912    | -1
+ nodename  | nodeport | logicalrelid | shardminvalue | shardmaxvalue 
+-----------+----------+--------------+---------------+---------------
+ localhost |    57638 | nopk_tb1     | 0             | 536870911
+ localhost |    57638 | nopk_tb1     | 1610612736    | 2147483647
+ localhost |    57638 | nopk_tb1     | -1610612736   | -1073741825
+ localhost |    57639 | nopk_tb1     | 1073741824    | 1610612735
+ localhost |    57639 | nopk_tb1     | -1073741824   | -536870913
+ localhost |    57639 | nopk_tb1     | -2147483648   | -1610612737
+ localhost |    57639 | nopk_tb1     | 536870912     | 1073741823
+ localhost |    57639 | nopk_tb1     | -536870912    | -1
 (8 rows)
 
 -- 检查分片迁移后SQL执行正常
@@ -142,20 +142,20 @@ select nodename,
 from pg_dist_shard_placement p
      join pg_dist_shard s on(p.shardid = s.shardid)
 order by nodename,nodeport,logicalrelid,shardminvalue;
-   nodename    | nodeport |     logicalrelid     | shardminvalue | shardmaxvalue 
----------------+----------+----------------------+---------------+---------------
- worker_1_host |    57637 | replica_identity_tb1 | 1073741824    | 1610612735
- worker_1_host |    57637 | replica_identity_tb1 | -2147483648   | -1610612737
- worker_1_host |    57637 | replica_identity_tb1 | -536870912    | -1
- worker_2_host |    57638 | replica_identity_tb1 | 0             | 536870911
- worker_2_host |    57638 | replica_identity_tb1 | 1610612736    | 2147483647
- worker_2_host |    57638 | replica_identity_tb1 | -1610612736   | -1073741825
- worker_3_host |    57639 | replica_identity_tb1 | -1073741824   | -536870913
- worker_3_host |    57639 | replica_identity_tb1 | 536870912     | 1073741823
+ nodename  | nodeport |     logicalrelid     | shardminvalue | shardmaxvalue 
+-----------+----------+----------------------+---------------+---------------
+ localhost |    57637 | replica_identity_tb1 | 1073741824    | 1610612735
+ localhost |    57637 | replica_identity_tb1 | -2147483648   | -1610612737
+ localhost |    57637 | replica_identity_tb1 | -536870912    | -1
+ localhost |    57638 | replica_identity_tb1 | 0             | 536870911
+ localhost |    57638 | replica_identity_tb1 | 1610612736    | 2147483647
+ localhost |    57638 | replica_identity_tb1 | -1610612736   | -1073741825
+ localhost |    57639 | replica_identity_tb1 | -1073741824   | -536870913
+ localhost |    57639 | replica_identity_tb1 | 536870912     | 1073741823
 (8 rows)
 
 -- 创建并执行迁移任务
-select jobid, taskid from cigration_create_worker_migration_job(:'worker_1_host', :'worker_3_host') limit 1 \gset
+select jobid, taskid from cigration_create_worker_migration_job(:'worker_1_host', :worker_1_port, :'worker_3_host', :worker_3_port) limit 1 \gset
 select cigration_run_shard_migration_job(:jobid, with_replica_identity_check=>true);
  cigration_run_shard_migration_job 
 -----------------------------------
@@ -177,16 +177,16 @@ select nodename,
 from pg_dist_shard_placement p
      join pg_dist_shard s on(p.shardid = s.shardid)
 order by nodename,nodeport,logicalrelid,shardminvalue;
-   nodename    | nodeport |     logicalrelid     | shardminvalue | shardmaxvalue 
----------------+----------+----------------------+---------------+---------------
- worker_2_host |    57638 | replica_identity_tb1 | 0             | 536870911
- worker_2_host |    57638 | replica_identity_tb1 | 1610612736    | 2147483647
- worker_2_host |    57638 | replica_identity_tb1 | -1610612736   | -1073741825
- worker_3_host |    57639 | replica_identity_tb1 | 1073741824    | 1610612735
- worker_3_host |    57639 | replica_identity_tb1 | -1073741824   | -536870913
- worker_3_host |    57639 | replica_identity_tb1 | -2147483648   | -1610612737
- worker_3_host |    57639 | replica_identity_tb1 | 536870912     | 1073741823
- worker_3_host |    57639 | replica_identity_tb1 | -536870912    | -1
+ nodename  | nodeport |     logicalrelid     | shardminvalue | shardmaxvalue 
+-----------+----------+----------------------+---------------+---------------
+ localhost |    57638 | replica_identity_tb1 | 0             | 536870911
+ localhost |    57638 | replica_identity_tb1 | 1610612736    | 2147483647
+ localhost |    57638 | replica_identity_tb1 | -1610612736   | -1073741825
+ localhost |    57639 | replica_identity_tb1 | 1073741824    | 1610612735
+ localhost |    57639 | replica_identity_tb1 | -1073741824   | -536870913
+ localhost |    57639 | replica_identity_tb1 | -2147483648   | -1610612737
+ localhost |    57639 | replica_identity_tb1 | 536870912     | 1073741823
+ localhost |    57639 | replica_identity_tb1 | -536870912    | -1
 (8 rows)
 
 -- 检查分片迁移后SQL执行正常
@@ -204,11 +204,11 @@ select nodename,nodeport,count(*)
 from cigration_get_recyclebin_metadata()
 group by nodename,nodeport
 order by nodename,nodeport;
-   nodename    | nodeport | count 
----------------+----------+-------
- worker_1_host |    57637 |     2
- worker_2_host |    57638 |     2
- worker_3_host |    57639 |     2
+ nodename  | nodeport | count 
+-----------+----------+-------
+ localhost |    57637 |     2
+ localhost |    57638 |     2
+ localhost |    57639 |     2
 (3 rows)
 
 select cigration_cleanup_recyclebin();

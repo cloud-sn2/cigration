@@ -155,7 +155,8 @@ create table if not exists cigration.pg_citus_shard_migration_sql_log
   id bigserial primary key,
   jobid int not null,
   taskid int not null,
-  execute_node text not null,
+  execute_nodename text not null,
+  execute_nodeport integer not null,
   functionid text not null,
   sql text,
   execute_time timestamp default now()
@@ -1351,20 +1352,19 @@ END;
 $$ LANGUAGE plpgsql;
  
 
-CREATE OR REPLACE FUNCTION cigration.cigration_create_worker_empty_job(input_source_nodename text[])
-RETURNS TABLE(jobid integer,taskid integer,all_colocateion_shards_id bigint[],source_worker text,target_worker text,total_shard_count int,total_shard_size bigint)
+CREATE OR REPLACE FUNCTION cigration.cigration_create_worker_empty_job(input_source_nodes text[])
+RETURNS TABLE(jobid integer,taskid integer,all_colocateion_shards_id bigint[],source_nodename text,source_nodeport integer,target_nodename text,target_nodeport integer,total_shard_count int,total_shard_size bigint)
 -- 
 -- 函数名：cigration.cigration_create_worker_empty_job
 -- 函数功能：创建一个缩容场景的JOB
--- 参数：source_nodename text[]，形式类似：array['192.168.1.1','192.168.1.2']
--- 返回值：返回一个包含下面这里列的记录集合
---   (jobid,taskid,all_colocateion_shards_id,source_worker,target_worker,total_shard_count,total_shard_size)
+-- 参数：input_source_nodes text[]，形式类似：array['192.168.1.1:5432','192.168.1.2:5432']
+-- 返回值：返回生成的迁移任务记录
 -- 
 AS $$
 DECLARE
     -- 连接信息
-    source_nodename_list text[];
-    target_nodename_list text[];
+    source_node_list text[];
+    target_node_list text[];
     
     var_jobid int := 0;
 BEGIN
@@ -1373,62 +1373,57 @@ BEGIN
         RAISE EXCEPTION 'function cigration_create_worker_empty_job could only be executed on coordinate node.';
     END IF;
     
-    --检查是否有未完成的JOB
-    if (select count(*) <> 0 from cigration.pg_citus_shard_migration where status <> 'completed') then
-        RAISE EXCEPTION 'can not create a new job when there are some uncompleted jobs.';
+    --检查是否有未归档的JOB
+    if (select count(*) <> 0 from cigration.pg_citus_shard_migration) then
+        RAISE EXCEPTION 'can not create a new job when there are some uncleanuped jobs.';
     end if;
     
     --检查集群健康状态
-    if (SELECT count(*) <> 0 FROM pg_dist_node WHERE isactive = 'f' OR noderole <> 'primary') then
-        RAISE EXCEPTION 'there are some invalid node in the cluster.';
+    if (SELECT count(*) <> 0 FROM pg_dist_node WHERE noderole = 'primary' AND isactive = 'f') then
+        RAISE EXCEPTION 'there are some invalid primary node in the cluster.';
     end if;
     
-    -- 如果输入的WK数大于等于集群中现有的WK数，报错退出
-    if (select count(*) <= array_length(input_source_nodename,1) from pg_dist_node) then
-        RAISE EXCEPTION 'the input worker count is larger than the worker count now in the cluster.Please confirm if the parameter input_source_nodename is correct.';
-    end if;
-    
-    -- 判断缩容IP是否在集群中，不在就报错，在的话就取出端口号
-    if (select count(nodename) <> array_length(input_source_nodename,1) from pg_dist_node where nodename in (select unnest(input_source_nodename))) then
-        RAISE EXCEPTION 'some nodenames in the parameter input_source_nodename are not in this citus cluster.';
+    -- 判断输入源节点是否在集群中，不在就报错
+    if (select count(*) <> array_length(input_source_nodes,1) from pg_dist_node where noderole = 'primary' and concat(nodename, ':', nodeport) = any(input_source_nodes)) then
+        RAISE EXCEPTION 'some nodes in the parameter input_source_nodes are not in this citus cluster or not primary note.';
     end if;
 
     perform cigration.cigration_print_log('cigration_create_worker_empty_job','check if workers in this citus cluster are all extended workers.');
     -- 如果本次缩容把所有的存储分片表的WK都去掉了，那也有问题，报错退出
-    if (select count(*) = 0 from pg_dist_node where shouldhaveshards = true and nodename not in (select unnest(input_source_nodename))) then
-        RAISE EXCEPTION 'there are no normal workers left for shards migration after delete %.',input_source_nodename;
+    if (select count(*) = 0 from pg_dist_node where noderole = 'primary' and shouldhaveshards = true and concat(nodename, ':', nodeport) <> all(input_source_nodes)) then
+        RAISE EXCEPTION 'there are no normal workers left for shards migration after delete %.',input_source_nodes;
     end if;
     
-    select array_agg(nodename)
-    into strict target_nodename_list
+    select array_agg(concat(nodename, ':', nodeport))
+    into strict target_node_list
     from pg_dist_node
-    where nodename not in (select unnest(input_source_nodename)) and shouldhaveshards = true;
+    where noderole = 'primary' and shouldhaveshards = true and concat(nodename, ':', nodeport) <> all(input_source_nodes);
     
-    perform cigration.cigration_print_log('cigration_create_worker_empty_job','get actual source nodenames for function cigration_generate_migration_strategy.');
-    select array_agg(nodename) into source_nodename_list from pg_dist_node;
+    perform cigration.cigration_print_log('cigration_create_worker_empty_job','get actual source nodes for function cigration_generate_migration_strategy.');
+    select array_agg(concat(nodename, ':', nodeport)) into source_node_list from pg_dist_node where noderole = 'primary';
     
     perform cigration.cigration_print_log('cigration_create_worker_empty_job','call function cigration_generate_migration_strategy to generate a migration job.');
-    select cigration.cigration_generate_migration_strategy(source_nodename_list,target_nodename_list) into var_jobid;
+    select cigration.cigration_generate_migration_strategy(source_node_list,target_node_list) into var_jobid;
     
-    RETURN QUERY select tb.jobid,tb.taskid,tb.all_colocateion_shards_id,tb.source_nodename,tb.target_nodename,tb.total_shard_count,tb.total_shard_size from cigration.pg_citus_shard_migration as tb where tb.jobid = var_jobid;
+    RETURN QUERY select tb.jobid,tb.taskid,tb.all_colocateion_shards_id,tb.source_nodename,tb.source_nodeport,tb.target_nodename,tb.target_nodeport,tb.total_shard_count,tb.total_shard_size
+                 from cigration.pg_citus_shard_migration as tb where tb.jobid = var_jobid;
 END;
 $$ LANGUAGE plpgsql;
 
 
 CREATE OR REPLACE FUNCTION cigration.cigration_create_rebalance_job()
-RETURNS TABLE(jobid integer,taskid integer,all_colocateion_shards_id bigint[],source_worker text,target_worker text,total_shard_count int,total_shard_size bigint)
+RETURNS TABLE(jobid integer,taskid integer,all_colocateion_shards_id bigint[],source_nodename text,source_nodeport integer,target_nodename text,target_nodeport integer,total_shard_count int,total_shard_size bigint)
 -- 
 -- 函数名：cigration.cigration_create_rebalance_job
 -- 函数功能：创建一个扩容/再平衡场景的JOB
 -- 参数：无
--- 返回值：返回一个包含下面这里列的记录集合
---   (jobid,taskid,all_colocateion_shards_id,source_worker,target_worker,total_shard_count,total_shard_size)
+-- 返回值：返回生成的迁移任务记录
 -- 
 AS $$
 DECLARE
     -- 连接信息
-    source_nodename_list text[];
-    target_nodename_list text[];
+    source_node_list text[];
+    target_node_list text[];
 
     var_jobid int := 0;
 BEGIN
@@ -1437,47 +1432,50 @@ BEGIN
         RAISE EXCEPTION 'function cigration_create_rebalance_job could only be executed on coordinate node.';
     END IF;
     
-    --检查是否有未完成的JOB
-    if (select count(*) <> 0 from cigration.pg_citus_shard_migration where status <> 'completed') then
-        RAISE EXCEPTION 'can not create a new job when there are some uncompleted jobs.';
+    --检查是否有未归档的JOB
+    if (select count(*) <> 0 from cigration.pg_citus_shard_migration) then
+        RAISE EXCEPTION 'can not create a new job when there are some uncleanuped jobs.';
     end if;
     
     --检查集群健康状态
-    if (SELECT count(*) <> 0 FROM pg_dist_node WHERE isactive = 'f' OR noderole <> 'primary') then
-        RAISE EXCEPTION 'there are some invalid node in the cluster.';
+    if (SELECT count(*) <> 0 FROM pg_dist_node WHERE noderole = 'primary' AND isactive = 'f') then
+        RAISE EXCEPTION 'there are some invalid primary node in the cluster.';
     end if;
     
     -- 计算分片迁移的策略
     perform cigration.cigration_print_log('cigration_create_rebalance_job','get actual source nodenames for function cigration_generate_migration_strategy.');
-    select array_agg(nodename) into source_nodename_list from pg_dist_node;
+    select array_agg(concat(nodename, ':', nodeport)) into source_node_list from pg_dist_node where noderole = 'primary';
     
     perform cigration.cigration_print_log('cigration_create_rebalance_job','get actual target nodenames for function cigration_generate_migration_strategy.');
-    select array_agg(nodename) into strict target_nodename_list from pg_dist_node where shouldhaveshards = true;
+    select array_agg(concat(nodename, ':', nodeport)) into strict target_node_list from pg_dist_node where noderole = 'primary' and shouldhaveshards = true;
     
     perform cigration.cigration_print_log('cigration_create_rebalance_job','call function cigration_generate_migration_strategy to generate a migration job.');
-    select cigration.cigration_generate_migration_strategy(source_nodename_list,target_nodename_list) into var_jobid;
+    select cigration.cigration_generate_migration_strategy(source_node_list,target_node_list) into var_jobid;
     
-    RETURN QUERY select tb.jobid,tb.taskid,tb.all_colocateion_shards_id,tb.source_nodename,tb.target_nodename,tb.total_shard_count,tb.total_shard_size from cigration.pg_citus_shard_migration as tb where tb.jobid = var_jobid;
+    RETURN QUERY select tb.jobid,tb.taskid,tb.all_colocateion_shards_id,tb.source_nodename,tb.source_nodeport,tb.target_nodename,tb.target_nodeport,tb.total_shard_count,tb.total_shard_size
+                 from cigration.pg_citus_shard_migration as tb where tb.jobid = var_jobid;
 END;
 $$ LANGUAGE plpgsql;
 
 
-CREATE OR REPLACE FUNCTION cigration.cigration_create_worker_migration_job(input_source_nodename text,input_target_nodename text)
-RETURNS TABLE(jobid integer,taskid integer,all_colocateion_shards_id bigint[],source_worker text,target_worker text,total_shard_count int,total_shard_size bigint)
+CREATE OR REPLACE FUNCTION cigration.cigration_create_worker_migration_job(input_source_nodename text, input_source_nodeport integer, input_target_nodename text, input_target_nodeport integer)
+RETURNS TABLE(jobid integer,taskid integer,all_colocateion_shards_id bigint[],source_nodename text,source_nodeport integer,target_nodename text,target_nodeport integer,total_shard_count int,total_shard_size bigint)
 -- 
 -- 函数名：cigration.cigration_create_worker_migration_job
 -- 函数功能：创建一个迁移场景的JOB
--- 参数：source_nodename text，形式类似：'192.168.1.1'
---       target_nodename text，形式类似：'192.168.1.2'
--- 返回值：返回一个包含下面这里列的记录集合
---   (jobid,taskid,all_colocateion_shards_id,source_worker,target_worker,total_shard_count,total_shard_size)
+-- 参数：input_source_nodename text，形式类似：'192.168.1.1'
+--       input_source_nodeport integer,
+--       input_target_nodename text，形式类似：'192.168.1.2'
+--       input_target_nodeport integer
+-- 返回值：返回生成的迁移任务记录
 -- 
 AS $$
 DECLARE
     -- 连接信息
-    source_nodename_list text[];
-    target_nodename_list text[];
+    source_node_list text[];
+    target_node_list text[];
 
+    var_shouldhaveshards boolean := null;
     var_jobid int := 0;
 BEGIN
     -- 执行节点必须是CN节点
@@ -1485,51 +1483,51 @@ BEGIN
         RAISE EXCEPTION 'function cigration_create_worker_migration_job could only be executed on coordinate node.';
     END IF;
     
-    -- 检查是否有未完成的JOB
-    if (select count(*) <> 0 from cigration.pg_citus_shard_migration where status <> 'completed' and (source_nodename = input_source_nodename or target_nodename = input_target_nodename)) then
-        RAISE EXCEPTION 'can not create a new job when there are some uncompleted jobs in % or %.',input_source_nodename,input_target_nodename;
+    --检查是否有未归档的JOB
+    if (select count(*) <> 0 from cigration.pg_citus_shard_migration m
+        where array[concat(m.source_nodename,':',m.source_nodeport), concat(m.target_nodename,':',m.target_nodeport)] && 
+              array[concat(input_source_nodename,':',input_source_nodeport), concat(input_target_nodename,':',input_target_nodeport)]
+       ) then
+        RAISE EXCEPTION 'can not create a new job when there are some uncleanuped jobs in %:% or %:%.',input_source_nodename,input_source_nodeport,input_target_nodename,input_target_nodeport;
     end if;
     
     --检查集群健康状态
-    if (SELECT count(*) <> 0 FROM pg_dist_node WHERE isactive = 'f' OR noderole <> 'primary') then
-        RAISE EXCEPTION 'there are some invalid node in the cluster.';
+    if (SELECT count(*) <> 0 FROM pg_dist_node WHERE noderole = 'primary' AND isactive = 'f') then
+        RAISE EXCEPTION 'there are some invalid primary node in the cluster.';
     end if;
-    
-    -- 异常检测，如果输入参数的ip不在集群内就报错退出
-    if (select count(*) = 0 from pg_dist_node where nodename = input_source_nodename) then
-        RAISE EXCEPTION 'some nodenames in the parameter input_source_nodename are not in this citus cluster.';
+
+    -- 判断输入源节点是否在集群中，不在就报错
+    if (select count(*) <> 1 from pg_dist_node where noderole = 'primary' and nodename = input_source_nodename and nodeport = input_source_nodeport) then
+        RAISE EXCEPTION 'the source node is not in this citus cluster or not primary note.';
     end if;
+
+    select shouldhaveshards into var_shouldhaveshards from pg_dist_node where noderole = 'primary' and nodename = input_target_nodename and nodeport = input_target_nodeport;
     
-    if (select count(*) = 0 from pg_dist_node where nodename = input_target_nodename) then
-        RAISE EXCEPTION 'some nodenames in the parameter input_target_nodename are not in this citus cluster.';
-    end if;
-    
-    -- 如果源和目标一样，或者源和目标有交集都算异常输入
-    if (input_source_nodename = input_target_nodename) then
-        RAISE EXCEPTION 'source_nodename can not be the same as the target_nodename.';
-    end if;
-    
+    -- 判断输入目的节点是否在集群中，不在就报错
+    if var_shouldhaveshards is null then
+        RAISE EXCEPTION 'the target node is not in this citus cluster or not primary note.';
     -- 如果目标节点的shouldhaveshards是false的话，报错退出
-    if (select count(*) > 0 from pg_dist_node where nodename = input_target_nodename and shouldhaveshards = false) then
-        RAISE EXCEPTION 'The shouldhaveshards property of target node should not be false.';
+    elsif var_shouldhaveshards = false then
+        RAISE EXCEPTION 'The shouldhaveshards property of the target nodes can not be false.';
     end if;
 
     perform cigration.cigration_print_log('cigration_create_worker_migration_job','call function cigration_generate_migration_strategy to generate a migration job.');
-    select cigration.cigration_generate_migration_strategy(string_to_array(input_source_nodename,','),string_to_array(input_target_nodename,',')) into var_jobid;
+    select cigration.cigration_generate_migration_strategy(array[concat(input_source_nodename, ':', input_source_nodeport)], array[concat(input_target_nodename, ':', input_target_nodeport)]) into var_jobid;
     
-    RETURN QUERY select tb.jobid,tb.taskid,tb.all_colocateion_shards_id,tb.source_nodename,tb.target_nodename,tb.total_shard_count,tb.total_shard_size from cigration.pg_citus_shard_migration as tb where tb.jobid = var_jobid;
+    RETURN QUERY select tb.jobid,tb.taskid,tb.all_colocateion_shards_id,tb.source_nodename,tb.source_nodeport,tb.target_nodename,tb.target_nodeport,tb.total_shard_count,tb.total_shard_size
+                 from cigration.pg_citus_shard_migration as tb where tb.jobid = var_jobid;
 END;
 $$ LANGUAGE plpgsql;
 
 
 
-CREATE OR REPLACE FUNCTION cigration.cigration_generate_migration_strategy(source_nodenames text[],target_nodenames text[])
+CREATE OR REPLACE FUNCTION cigration.cigration_generate_migration_strategy(source_nodes text[],target_nodes text[])
 RETURNS int
 -- 
 -- 函数名：cigration.cigration_generate_migration_strategy
 -- 函数功能：计算分片迁移的策略，得出源上的哪些分片需要迁移到哪些目标上
--- 参数：source_nodenames text[]，形式类似：array['192.168.1.1','xx.xx.xx.xx']
---       target_nodenames text[]，形式类似：array['192.168.1.2']
+-- 参数：source_nodes text[]，形式类似：array['192.168.1.1:5432','xx.xx.xx.xx:5432']
+--       target_nodes text[]，形式类似：array['192.168.1.2:5432']
 -- 返回值：int job的id值
 -- 
 AS $cigration_generate_migration_strategy$
@@ -1537,7 +1535,7 @@ DECLARE
     logical_tb record;
     parent_tbnames regclass[];
     tbname_list_without_parenttb regclass[];
-    representative_shard regclass;
+    representative_rel regclass;
     shard_count integer;
     
     upper_limit integer;
@@ -1546,7 +1544,9 @@ DECLARE
     worker_count integer;
     current_shard_count integer;
     
-    source_nodename_element text;
+    source_node_element text;
+    source_nodename text;
+    source_nodeport integer;
     shard_to_move bigint[];
     tmp_shardid bigint;
     
@@ -1556,25 +1556,39 @@ DECLARE
     parent_shardid_list bigint[];
     var_total_shard_size bigint;
     var_all_colocateion_shards_size bigint[];
+    target_node_element text;
     target_nodename text;
-    target_nodename_element text;
+    target_nodeport integer;
     target_has_been_chosen text[];
+    found_target_node boolean;
     
-    var_source_nodeport integer;
-    var_target_nodeport integer;
+    --var_source_nodeport integer;
+    --var_target_nodeport integer;
     var_jobid integer;
     
     create_schema_info text;
     create_schema_execute_info record;
 BEGIN
+    -- 输入参数检查
+    if (array_length(source_nodes,1) = 0) then
+        RAISE EXCEPTION 'source_nodes is empty';
+    end if;
+
+    if (array_length(target_nodes,1) = 0) then
+        RAISE EXCEPTION 'target_nodes is empty';
+    end if;
+
     -- 生成每次任务的ID
     select nextval('cigration.jobid_seq') into strict var_jobid;
     
-    foreach source_nodename_element in array source_nodenames
+    foreach source_node_element in array source_nodes
     -- 按迁移源节点轮询，依次算出每个源上有哪些分片需要迁移走
-    loop
+    loop	
         -- debug info
-        raise debug 'source_nodename_element:%',source_nodename_element;
+        raise debug 'source_node_element:%',source_node_element;
+        source_nodename := split_part(source_node_element, ':', 1);
+        source_nodeport := split_part(source_node_element, ':', 2)::int;
+
         for logical_tb in select array_agg(logicalrelid) as tb_list,colocationid from pg_dist_partition where partmethod = 'h' group by colocationid
         loop
             -- 把分区主表筛选出来，如果有的话
@@ -1585,7 +1599,7 @@ BEGIN
             
             if (parent_tbnames is null) then
                 -- 选一个分片作为这组亲和表的代表
-                select logical_tb.tb_list[1] into strict representative_shard;
+                select logical_tb.tb_list[1] into strict representative_rel;
             else
                 -- 去掉分区主表之后的所有表
                 select array_agg(tmp)
@@ -1594,22 +1608,23 @@ BEGIN
                 where tmp not in (select unnest(parent_tbnames));
                 
                 -- 选一个分片作为这组亲和表的代表
-                select tbname_list_without_parenttb[1] into strict representative_shard;
+                select tbname_list_without_parenttb[1] into strict representative_rel;
             end if;
             
             -- 获取该组亲和表的分片数           
             select count(*)
             into strict shard_count
             from pg_dist_shard_placement
-            where nodename in (select unnest(source_nodenames || target_nodenames)) and shardid in (select shardid from pg_dist_shard where logicalrelid = representative_shard);
+            where concat(nodename, ':', nodeport) = any(source_nodes || target_nodes)
+                  and shardid in (select shardid from pg_dist_shard where logicalrelid = representative_rel);
             
             -- debug info
-            raise debug 'tb:% has % shard in node %',representative_shard,shard_count,source_nodenames || target_nodenames;
+            raise debug 'tb:% has % shard in node %',representative_rel,shard_count,source_nodes || target_nodes;
         
             -- 算出均衡值的上下限
             -- 如果这个源不在目标节点中，说明该节点是需要缩容的掉的，这种情况下这个节点上的那么平衡值的上限就是0
-            worker_count := array_length(target_nodenames,1);
-            if (array_position(target_nodenames,source_nodename_element) is null) then
+            worker_count := array_length(target_nodes,1);
+            if (array_position(target_nodes,source_node_element) is null) then
                 upper_limit := 0;
             else
                 upper_limit := (shard_count + worker_count - 1) / worker_count;
@@ -1623,7 +1638,10 @@ BEGIN
             -- 满足这个条件的即为均衡状态：分片数/worker集群数 <= worker上的分片数 <= (分片数+worker集群数-1)/worker集群数
             -- 选出所有的需要从源迁走的分片
             with ordered_shardid as
-            (select a.shardid from pg_dist_shard_placement a,pg_dist_shard b where a.shardid = b.shardid and b.logicalrelid = representative_shard and a.nodename = source_nodename_element order by a.shardid offset upper_limit)
+            (select a.shardid
+			 from pg_dist_shard_placement a,pg_dist_shard b
+			 where a.shardid = b.shardid and b.logicalrelid = representative_rel and a.nodename = source_nodename and a.nodeport = source_nodeport
+			 order by a.shardid offset upper_limit)
             select array_agg(shardid) into shard_to_move from ordered_shardid;
             
             if (shard_to_move is not null) then
@@ -1652,58 +1670,64 @@ BEGIN
                         select array_agg(a.shardid)
                         into strict parent_shardid_list
                         from pg_dist_shard a,pg_dist_shard_placement b 
-                        where a.shardid = b.shardid and logicalrelid in (select unnest(parent_tbnames)::regclass) and b.nodename = source_nodename_element and (shardminvalue,shardmaxvalue)=(select shardminvalue,shardmaxvalue from pg_dist_shard where shardid = tmp_shardid ORDER BY shardid ASC);
-                        
+                        where a.shardid = b.shardid
+						      and logicalrelid in (select unnest(parent_tbnames)::regclass)
+						      and b.nodename = source_nodename and b.nodeport = source_nodeport
+							  and (shardminvalue,shardmaxvalue)=(select shardminvalue,shardmaxvalue from pg_dist_shard where shardid = tmp_shardid ORDER BY shardid ASC);
+
                         var_total_shard_count := var_total_shard_count + array_length(parent_shardid_list,1);
                         var_all_colocateion_shards_id := array_cat(parent_shardid_list,var_all_colocateion_shards_id);
                         select array_cat(array_agg(0::bigint),var_all_colocateion_shards_size)
                         into strict var_all_colocateion_shards_size
                         from generate_series(1,array_length(parent_shardid_list,1))id;
                     end if;
-                    
-                    foreach target_nodename_element in array target_nodenames
+
+                    found_target_node := false;
+                    foreach target_node_element in array target_nodes
                     loop
+                        target_nodename := split_part(target_node_element, ':', 1);
+                        target_nodeport := split_part(target_node_element, ':', 2)::int;
+
                         -- 计算每个task的目标节点
                         -- 先计算当前这个目标节点上已经有多少个分片了
                         select count(*)
                         into current_shard_count
                         from pg_dist_shard_placement
-                        where nodename = target_nodename_element and shardid in (select shardid from pg_dist_shard where logicalrelid = representative_shard);
+                        where nodename = target_nodename and nodeport = target_nodeport
+						      and shardid in (select shardid from pg_dist_shard where logicalrelid = representative_rel);
                         
-                        if (array_length(array_positions(target_has_been_chosen,logical_tb.colocationid || ':' || target_nodename_element),1) is not null) then
+                        if (array_length(array_positions(target_has_been_chosen,logical_tb.colocationid || ':' || target_node_element),1) is not null) then
                             -- 如果当前这个目标节点已经被选择过，那么节点上分片数必须加上被选择过的次数（动态平衡）
-                            current_shard_count := current_shard_count + array_length(array_positions(target_has_been_chosen,logical_tb.colocationid || ':' || target_nodename_element),1);
+                            current_shard_count := current_shard_count + array_length(array_positions(target_has_been_chosen,logical_tb.colocationid || ':' || target_node_element),1);
                             
                             raise debug 'current_shard_count : % ',current_shard_count;
                         end if;
                         
                         if (current_shard_count < target_upper_limit) then
-                            target_nodename := target_nodename_element;
+                            found_target_node := true;
                             -- 每次选择一个目标节点就记录一次
-                            select array_append(target_has_been_chosen,logical_tb.colocationid || ':' || target_nodename) into target_has_been_chosen;
+                            select array_append(target_has_been_chosen,logical_tb.colocationid || ':' || target_node_element) into target_has_been_chosen;
                             -- debug info
-                            raise debug '% has been chosen to be the target_nodename',target_nodename;
+                            raise debug '% has been chosen to be the target node',target_node_element;
                             raise debug 'target_has_been_chosen : % ',target_has_been_chosen;
                             
+                            -- 取出缩容WK上的实际端口值(仅用于CN和worker之间有中间件，CN元数据中的worker端口不是实际端口场景，比如pgbouncer，haparoxy)
+                            -- select cigration.cigration_get_worker_port(source_nodename_element) into strict var_source_nodeport;
+                            -- select cigration.cigration_get_worker_port(target_node_element) into strict var_target_nodeport;
+                            
+                            -- 将该task信息写入job表中，需要判断入参中提供的端口号是空还是具体值
+                            insert into cigration.pg_citus_shard_migration (jobid,source_nodename,source_nodeport,target_nodename,target_nodeport,all_colocateion_shards_id,all_colocateion_shards_size,total_shard_count,total_shard_size,create_time)
+                            values (var_jobid,source_nodename,source_nodeport,target_nodename,target_nodeport,var_all_colocateion_shards_id,var_all_colocateion_shards_size,var_total_shard_count,var_total_shard_size,now());
+
                             exit;
                         end if;
                     end loop;
                     
-                    if (target_nodename is null) then
-                        raise exception 'There is no suitable target nodename for shard migration after go through all targets.';
+                    if (not found_target_node) then
+                        raise exception 'There is no suitable target node for shard migration after go through all targets.';
                     end if;
-                                        
-                    -- 取出缩容WK上的实际端口值
-                    select cigration.cigration_get_worker_port(source_nodename_element) into strict var_source_nodeport;
-                    select cigration.cigration_get_worker_port(target_nodename) into strict var_target_nodeport;
-                    
-                    -- 将该task信息写入job表中，需要判断入参中提供的端口号是空还是具体值
-                    insert into cigration.pg_citus_shard_migration (jobid,source_nodename,source_nodeport,target_nodename,target_nodeport,all_colocateion_shards_id,all_colocateion_shards_size,total_shard_count,total_shard_size,create_time)
-                    values (var_jobid,source_nodename_element,var_source_nodeport,target_nodename,var_target_nodeport,var_all_colocateion_shards_id,var_all_colocateion_shards_size,var_total_shard_count,var_total_shard_size,now());
+                                       
                 end loop;
-
-                -- 清空target_has_been_chosen
-                -- target_has_been_chosen := null;
             else
                 -- 这组亲和表在这个WK上没有需要迁移的分片
                 continue;
@@ -1711,11 +1735,9 @@ BEGIN
         end loop;
     end loop;
     
-    create_schema_info := format('CREATE SCHEMA IF NOT EXISTS cigration_recyclebin_%s', var_jobid);
-    -- CREATE BACKUP SCHEMA ON CN NODE(TODO:CREATE ORPERATION IS NEEDED?)
-    -- execute create_schema_info;
-    
     -- CREATE BACKUP SCHEMA ON ALL WORKER NODES
+    create_schema_info := format('CREATE SCHEMA IF NOT EXISTS cigration_recyclebin_%s', var_jobid);
+    
     for create_schema_execute_info in SELECT nodename, success, result FROM run_command_on_workers(create_schema_info)
     loop
         if create_schema_execute_info.success = 'f' then
@@ -1950,9 +1972,9 @@ BEGIN
                     -- 锁住正在迁移的分片表
                     if (check_only is false) then
                         -- 先建立到各个扩展WK的dblink
-                        for exwk in select nodename,nodeport from pg_dist_node where hasmetadata = 't' order by nodename
+                        for exwk in select nodename,nodeport from pg_dist_node where noderole = 'primary' and hasmetadata = 't' order by nodename,nodeport
                         loop
-                            dblink_exwk_name := 'exwk_con_' || exwk.nodename;
+                            dblink_exwk_name := concat('exwk_con_' ,exwk.nodename, '_', exwk.nodeport);
                             perform dblink_connect(dblink_exwk_name,format('host=%s port=%s dbname=%s user=%s',exwk.nodename,exwk.nodeport,current_database(),current_user));
                             perform dblink_exec(dblink_exwk_name,'begin');
                             perform dblink_exec(dblink_exwk_name,format('SET lock_timeout= ''%s s''',lock_timeout));
@@ -1962,9 +1984,9 @@ BEGIN
                         foreach logical_relid in array logical_relid_list
                         loop
                             EXECUTE format('LOCK TABLE %s IN EXCLUSIVE MODE', logical_relid);
-                            for exwk in select nodename,nodeport from pg_dist_node where hasmetadata = 't' order by nodename
+                            for exwk in select nodename,nodeport from pg_dist_node where noderole = 'primary' and hasmetadata = 't' order by nodename
                             loop
-                                dblink_exwk_name := 'exwk_con_' || exwk.nodename;
+                                dblink_exwk_name := concat('exwk_con_' ,exwk.nodename, '_', exwk.nodeport);
                                 perform dblink_exec(dblink_exwk_name,format('LOCK TABLE %s IN EXCLUSIVE MODE', logical_relid));
                             end loop;
                         end loop;
@@ -2012,8 +2034,9 @@ BEGIN
                                 BEGIN
                                     PERFORM dblink_exec(dblink_target_name,'ALTER SUBSCRIPTION citus_move_shard_placement_sub DISABLE');
                                     PERFORM dblink_exec(dblink_target_name, 'DROP SUBSCRIPTION IF EXISTS citus_move_shard_placement_sub CASCADE');
-                                    execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_node, functionid, sql) values(%L, %L, %L, %L, %L)', 
-                                            jobid_input, taskid_input, target_node_name, 'cigration.cigration_complete_shard_migration_task',
+                                    execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_nodename, execute_nodeport, functionid, sql) values(%L, %L, %L, %L, %L, %L)', 
+                                            jobid_input, taskid_input, target_node_name, i_target_node_port,
+                                            'cigration.cigration_complete_shard_migration_task',
                                             'DROP SUBSCRIPTION IF EXISTS citus_move_shard_placement_sub CASCADE');
                                     execute execute_sql;
                                 EXCEPTION WHEN QUERY_CANCELED or OTHERS THEN
@@ -2023,8 +2046,9 @@ BEGIN
                             
                                 BEGIN
                                     PERFORM dblink_exec(dblink_source_name,'DROP PUBLICATION IF EXISTS citus_move_shard_placement_pub CASCADE');
-                                    execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_node, functionid, sql) values(%L, %L, %L, %L, %L)', 
-                                            jobid_input, taskid_input, source_node_name, 'cigration.cigration_complete_shard_migration_task',
+                                    execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_nodename, execute_nodeport, functionid, sql) values(%L, %L, %L, %L, %L, %L)', 
+                                            jobid_input, taskid_input, source_node_name, i_source_node_port,
+                                            'cigration.cigration_complete_shard_migration_task',
                                             'DROP PUBLICATION IF EXISTS citus_move_shard_placement_pub CASCADE');
                                     execute execute_sql;
                                 EXCEPTION WHEN QUERY_CANCELED or OTHERS THEN
@@ -2172,32 +2196,40 @@ BEGIN
     from cigration.pg_citus_shard_migration
     where taskid = taskid_input and jobid = jobid_input;
 
+    -- 检查源节点和目的节点是否合法 
+    if (select count(*) <> 1 from pg_dist_node where noderole = 'primary' and nodename = source_node_name and nodeport = i_source_node_port) then
+        RAISE EXCEPTION 'the source node %:% is not in this citus cluster or not primary note.', source_node_name, i_source_node_port;
+    end if;
+
+    if (select count(*) <> 1 from pg_dist_node where noderole = 'primary' and nodename = target_node_name and nodeport = i_target_node_port and shouldhaveshards = true) then
+        RAISE EXCEPTION 'the target node %:% is not in this citus cluster or not primary note or shouldhaveshards is not true.', target_node_name, i_target_node_port;
+    end if;
+
     -- 更新CN上的元数据 
-    select * into strict node_info from pg_dist_node where nodename = target_node_name;
-    UPDATE pg_dist_shard_placement set nodename = target_node_name, nodeport = node_info.nodeport where shardid = any(shardid_list) and nodename = source_node_name;
+    UPDATE pg_dist_shard_placement set nodename = target_node_name, nodeport = i_target_node_port where shardid = any(shardid_list) and nodename = source_node_name and nodeport = i_source_node_port;
     -- perform cigration.cigration_print_log('cigration_update_metadata_after_migration','metadata has been updated in the coordinator node.');
     
     -- 同步元数据的更新到扩展WK上，采用2pc的方式更新
-    for node_info in select nodename,nodeport from pg_dist_node where hasmetadata = 't' order by nodename
+    for node_info in select nodename,nodeport from pg_dist_node where noderole = 'primary' and hasmetadata = 't' order by nodename,nodeport
     loop
-        dblink_name := 'exwk_con_' || node_info.nodename;
-        perform dblink_exec(dblink_name,format('UPDATE pg_dist_shard_placement set nodename = ''%s'', nodeport = %s where shardid = any(array[%s]) and nodename = ''%s''',target_node_name,node_info.nodeport,array_to_string(shardid_list,','),source_node_name));
+        dblink_name := concat('exwk_con_' ,node_info.nodename, '_', node_info.nodeport);
+        perform dblink_exec(dblink_name,format('UPDATE pg_dist_shard_placement set nodename = ''%s'', nodeport = %s where shardid = any(array[%s]) and nodename = ''%s'' and nodeport = ''%s''',target_node_name,i_target_node_port,array_to_string(shardid_list,','),source_node_name,i_source_node_port));
     end loop;
     
     -- prepare
-    for node_info in select nodename,nodeport from pg_dist_node where hasmetadata = 't' order by nodename
+    for node_info in select nodename,nodeport from pg_dist_node where noderole = 'primary' and hasmetadata = 't' order by nodename,nodeport
     loop
-        dblink_name := 'exwk_con_' || node_info.nodename;
+        dblink_name := concat('exwk_con_' ,node_info.nodename, '_', node_info.nodeport);
         perform dblink_exec(dblink_name,format($$PREPARE TRANSACTION 'citus_move_shard_placement_%s_%s_tran'$$,jobid_input,taskid_input));
-        perform cigration.cigration_print_log('cigration_update_metadata_after_migration',format('prepare transaction citus_move_shard_placement_%s_%s_tran in node %s.',jobid_input,taskid_input,node_info.nodename));
+        perform cigration.cigration_print_log('cigration_update_metadata_after_migration',format('prepare transaction citus_move_shard_placement_%s_%s_tran in node %s:%s.',jobid_input,taskid_input,node_info.nodename,node_info.nodeport));
     end loop;
     
     -- commit prepare
-    for node_info in select nodename,nodeport from pg_dist_node where hasmetadata = 't' order by nodename
+    for node_info in select nodename,nodeport from pg_dist_node where noderole = 'primary' and hasmetadata = 't' order by nodename,nodeport
     loop
-        dblink_name := 'exwk_con_' || node_info.nodename;
+        dblink_name := concat('exwk_con_' ,node_info.nodename, '_', node_info.nodeport);
         perform dblink_exec(dblink_name,format($$COMMIT PREPARED 'citus_move_shard_placement_%s_%s_tran'$$,jobid_input,taskid_input));
-        perform cigration.cigration_print_log('cigration_update_metadata_after_migration',format('commit prepare transaction citus_move_shard_placement_%s_%s_tran in node %s.',jobid_input,taskid_input,node_info.nodename));
+        perform cigration.cigration_print_log('cigration_update_metadata_after_migration',format('commit prepare transaction citus_move_shard_placement_%s_%s_tran in node %s:%s.',jobid_input,taskid_input,node_info.nodename,node_info.nodeport));
     end loop;
     
     -- 清理掉dblink后直接退出
@@ -2250,7 +2282,7 @@ BEGIN
     end if;
 
     -- 更新CN上的元数据
-    return format('UPDATE pg_dist_shard_placement set nodename = ''%s'' where shardid = any(array[%s]) and nodename = ''%s''',source_node_name,array_to_string(shardid_list,','),target_node_name);
+    return format('UPDATE pg_dist_shard_placement set nodename = ''%s'', nodeport = %s  where shardid = any(array[%s]) and nodename = ''%s'' and nodeport = %s',source_node_name,i_source_node_port,array_to_string(shardid_list,','),target_node_name,i_target_node_port);
 END;
 $cigration_rollback_metadata$ LANGUAGE plpgsql;
 
@@ -2301,7 +2333,7 @@ BEGIN
     where taskid = taskid_input and jobid = jobid_input;
     
     -- 从元数据中取出最新的分片位置，如果分片位置和任务记录一样的话不清理，报错
-    if (select count(*) <> 0 from pg_dist_shard_placement where nodename = source_node_name and shardid in (select unnest(shardid_list))) then
+    if (select count(*) <> 0 from pg_dist_shard_placement where nodename = source_node_name and nodeport = i_source_node_port and shardid in (select unnest(shardid_list))) then
         raise exception 'shardid:% is still active in this citus cluster,can not be deleted.',shardid_list;
     end if;
     
@@ -2322,8 +2354,9 @@ BEGIN
     loop
         PERFORM dblink_exec(dblink_source_name,format('ALTER TABLE IF EXISTS %s SET SCHEMA cigration_recyclebin_%s', logical_relid, jobid_input));
         
-        execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_node, functionid, sql) values(%L, %L, %L, %L, %L)', 
-                jobid_input, taskid_input, source_node_name, 'cigration.cigration_drop_old_shard',
+        execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_nodename, execute_nodeport, functionid, sql) values(%L, %L, %L, %L, %L, %L)', 
+                jobid_input, taskid_input, source_node_name, i_source_node_port,
+                'cigration.cigration_drop_old_shard',
                 format('ALTER TABLE IF EXISTS %s SET SCHEMA cigration_recyclebin_%s', logical_relid, jobid_input));
         execute execute_sql;
         -- debug信息
@@ -2440,8 +2473,9 @@ BEGIN
             END IF;
 
             PERFORM dblink_exec(dblink_target_con_name,'DROP SUBSCRIPTION IF EXISTS citus_move_shard_placement_sub CASCADE');
-            execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_node, functionid, sql) values (%L, %L, %L, %L, %L)',
-                    jobid_input, taskid_input, target_node_name, 'cigration.cigration_cancel_shard_migration_task',
+            execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_nodename, execute_nodeport, functionid, sql) values (%L, %L, %L, %L, %L, %L)',
+                    jobid_input, taskid_input, target_node_name, i_target_node_port,
+                    'cigration.cigration_cancel_shard_migration_task',
                     'DROP SUBSCRIPTION IF EXISTS citus_move_shard_placement_sub CASCADE');
             execute execute_sql;
         end if;
@@ -2452,8 +2486,9 @@ BEGIN
 
     BEGIN
         PERFORM dblink_exec(dblink_source_con_name, 'DROP PUBLICATION IF EXISTS citus_move_shard_placement_pub CASCADE');
-        execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_node, functionid, sql) values (%L, %L, %L, %L, %L)',
-                jobid_input, taskid_input, source_node_name, 'cigration.cigration_cancel_shard_migration_task',
+        execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_nodename, execute_nodeport, functionid, sql) values (%L, %L, %L, %L, %L, %L)',
+                jobid_input, taskid_input, source_node_name, i_source_node_port,
+                'cigration.cigration_cancel_shard_migration_task',
                 'DROP PUBLICATION IF EXISTS citus_move_shard_placement_pub CASCADE');
         execute execute_sql;
     EXCEPTION WHEN QUERY_CANCELED or OTHERS THEN
@@ -2462,7 +2497,7 @@ BEGIN
     END;
 
     -- 从元数据中取出最新的分片位置，如果分片位置和任务记录一样的话不清理，报错
-    if (select count(*) <> 0 from pg_dist_shard_placement where nodename = target_node_name and shardid in (select unnest(shardid_list))) then
+    if (select count(*) <> 0 from pg_dist_shard_placement where nodename = target_node_name and nodeport = i_target_node_port and shardid in (select unnest(shardid_list))) then
         raise exception 'shardid:% is still active in this citus cluster,can not be deleted.',shardid_list;
     end if;
 
@@ -2472,8 +2507,9 @@ BEGIN
         BEGIN
             PERFORM dblink_exec(dblink_target_con_name,format('ALTER TABLE IF EXISTS %s SET SCHEMA cigration_recyclebin_%s',
                     logical_relid, jobid_input));
-            execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_node, functionid, sql) values (%L, %L, %L, %L, %L)',
-                    jobid_input, taskid_input, target_node_name, 'cigration.cigration_cancel_shard_migration_task',
+            execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_nodename, execute_nodeport, functionid, sql) values (%L, %L, %L, %L, %L, %L)',
+                    jobid_input, taskid_input, target_node_name, i_target_node_port, 
+                    'cigration.cigration_cancel_shard_migration_task',
                     format('ALTER TABLE IF EXISTS %s SET SCHEMA cigration_recyclebin_%s', logical_relid, jobid_input));
             execute execute_sql;
             RAISE DEBUG 'ALTER TABLE [%] SET SCHEMA cigration_recyclebin_%.', logical_relid, jobid_input;
@@ -2481,8 +2517,9 @@ BEGIN
             --如果已经存在，则直接drop
             PERFORM dblink_exec(dblink_target_con_name,format('DROP TABLE IF EXISTS %s', logical_relid));
             
-            execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_node, functionid, sql) values(%L, %L, %L, %L, %L)', 
-                    jobid_input, taskid_input, target_node_name, 'cigration.cigration_cancel_shard_migration_task',
+            execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_nodename, execute_nodeport, functionid, sql) values(%L, %L, %L, %L, %L, %L)', 
+                    jobid_input, taskid_input, target_node_name, i_target_node_port, 
+                    'cigration.cigration_cancel_shard_migration_task',
                     format('DROP TABLE IF EXISTS %s', logical_relid));
             execute execute_sql;
             -- debug信息
@@ -2670,8 +2707,9 @@ BEGIN
                     PERFORM dblink_exec(dblink_target_con_name,'ALTER SUBSCRIPTION citus_move_shard_placement_sub DISABLE');
                     PERFORM dblink_exec(dblink_target_con_name,'DROP SUBSCRIPTION IF EXISTS citus_move_shard_placement_sub CASCADE');
                     
-                    execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_node, functionid, sql) values(%L, %L, %L, %L, %L)', 
-                            task_info.jobid, task_info.taskid, task_info.target_nodename, 'cigration.cigration_cleanup_error_env',
+                    execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_nodename, execute_nodeport,functionid, sql) values(%L, %L, %L, %L, %L, %L)', 
+                            task_info.jobid, task_info.taskid, task_info.target_nodename, task_info.target_nodeport, 
+                            'cigration.cigration_cleanup_error_env',
                             'DROP SUBSCRIPTION IF EXISTS citus_move_shard_placement_sub CASCADE');
                     execute execute_sql;
                 end if;
@@ -2691,8 +2729,9 @@ BEGIN
                 if (has_pub <> 0) then
                     PERFORM dblink_exec(dblink_source_con_name,'DROP PUBLICATION IF EXISTS citus_move_shard_placement_pub CASCADE');
                     
-                    execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_node, functionid, sql) values(%L, %L, %L, %L, %L)', 
-                            task_info.jobid, task_info.taskid, task_info.source_nodename, 'cigration.cigration_cleanup_error_env',
+                    execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_nodename, execute_nodeport, functionid, sql) values(%L, %L, %L, %L, %L, %L)', 
+                            task_info.jobid, task_info.taskid, task_info.source_nodename, task_info.source_nodeport, 
+                            'cigration.cigration_cleanup_error_env',
                             'DROP PUBLICATION IF EXISTS citus_move_shard_placement_pub CASCADE');
                     execute execute_sql;
                 end if;
@@ -2703,7 +2742,7 @@ BEGIN
         end if;
 
         -- 从元数据中取出最新的分片位置，如果分片位置和任务记录一样的话不清理，报错
-        if (select count(*) <> 0 from pg_dist_shard_placement where nodename = task_info.target_nodename 
+        if (select count(*) <> 0 from pg_dist_shard_placement where nodename = task_info.target_nodename and nodeport = task_info.target_nodeport
                 and shardid in (select unnest(task_info.all_colocateion_shards_id))) then
             raise exception 'shardid:% is still active in this citus cluster,can not be deleted.',shardid_list;
         end if;
@@ -2716,8 +2755,9 @@ BEGIN
                 PERFORM dblink_exec(dblink_target_con_name,format('ALTER TABLE IF EXISTS %s SET SCHEMA cigration_recyclebin_%s', 
                         logical_relid, task_info.jobid));
 
-                execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_node, functionid, sql) values(%L, %L, %L, %L, %L)', 
-                        task_info.jobid, task_info.taskid, task_info.target_nodename, 'cigration.cigration_cleanup_error_env',
+                execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_nodename, execute_nodeport, functionid, sql) values(%L, %L, %L, %L, %L, %L)', 
+                        task_info.jobid, task_info.taskid, task_info.target_nodename, task_info.target_nodeport, 
+                        'cigration.cigration_cleanup_error_env',
                         format('ALTER TABLE IF EXISTS %s SET SCHEMA cigration_recyclebin_%s', logical_relid, task_info.jobid));
                 execute execute_sql;
                 raise debug 'dblink_target_con_name:%,  logical_relid:%',dblink_target_con_name,logical_relid;
@@ -2725,8 +2765,9 @@ BEGIN
                 --如果已经存在，则直接drop
                 PERFORM dblink_exec(dblink_target_con_name,format('DROP TABLE IF EXISTS %s', logical_relid));
                 
-                execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_node, functionid, sql) values(%L, %L, %L, %L, %L)', 
-                        task_info.jobid, task_info.taskid, task_info.target_nodename, 'cigration.cigration_cleanup_error_env',
+                execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_nodename, execute_nodeport, functionid, sql) values(%L, %L, %L, %L, %L, %L)', 
+                        task_info.jobid, task_info.taskid, task_info.target_nodename, task_info.target_nodeport,
+                        'cigration.cigration_cleanup_error_env',
                         format('DROP TABLE IF EXISTS %s', logical_relid));
                 execute execute_sql;
                 -- debug信息
@@ -3013,8 +3054,9 @@ BEGIN
                                         FOR TABLE %s',
                                      (select string_agg(table_name,',') from unnest(shard_fulltablename_array_without_partition) table_name)));
 
-        execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_node, functionid, sql) values(%L, %L, %L, %L, %L)', 
-                jobid_input, taskid_input, source_node_name, 'cigration.cigration_move_shard_placement',
+        execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_nodename, execute_nodeport, functionid, sql) values(%L, %L, %L, %L, %L, %L)', 
+                jobid_input, taskid_input, source_node_name, source_node_port,
+                'cigration.cigration_move_shard_placement',
                 format('CREATE PUBLICATION citus_move_shard_placement_pub FOR TABLE %s',
                         (select string_agg(table_name,',') from unnest(shard_fulltablename_array_without_partition) table_name)));
         execute execute_sql;
@@ -3079,8 +3121,9 @@ BEGIN
                                          current_database(),
                                          logical_slot_name));
         
-        execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_node, functionid, sql) values(%L, %L, %L, %L, %L)', 
-                jobid_input, taskid_input, target_node_name, 'cigration.cigration_move_shard_placement',
+        execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_nodename, execute_nodeport, functionid, sql) values(%L, %L, %L, %L, %L, %L)', 
+                jobid_input, taskid_input, target_node_name, target_node_port,
+                'cigration.cigration_move_shard_placement',
                 format($$CREATE SUBSCRIPTION citus_move_shard_placement_sub
                                          CONNECTION 'host=%s port=%s user=%s dbname=%s'
                                          PUBLICATION citus_move_shard_placement_pub with (create_slot = false,slot_name = '%s')$$,
@@ -3117,8 +3160,9 @@ BEGIN
                 PERFORM dblink_exec(dblink_target_con_name, 
                                     'DROP SUBSCRIPTION IF EXISTS citus_move_shard_placement_sub CASCADE');
         
-                execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_node, functionid, sql) values(%L, %L, %L, %L, %L)', 
-                        jobid_input, taskid_input, target_node_name, 'cigration.cigration_move_shard_placement',
+                execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_nodename, execute_nodeport, functionid, sql) values(%L, %L, %L, %L, %L, %L)', 
+                        jobid_input, taskid_input, target_node_name, target_node_port,
+                        'cigration.cigration_move_shard_placement',
                         'DROP SUBSCRIPTION IF EXISTS citus_move_shard_placement_sub CASCADE');
                 execute execute_sql;
             EXCEPTION WHEN QUERY_CANCELED or OTHERS THEN
@@ -3132,8 +3176,9 @@ BEGIN
                 PERFORM dblink_exec(dblink_source_con_name, 
                                 'DROP PUBLICATION IF EXISTS citus_move_shard_placement_pub CASCADE');
         
-                execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_node, functionid, sql) values(%L, %L, %L, %L, %L)', 
-                        jobid_input, taskid_input, source_node_name, 'cigration.cigration_move_shard_placement',
+                execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_nodename, execute_nodeport, functionid, sql) values(%L, %L, %L, %L, %L, %L)', 
+                        jobid_input, taskid_input, source_node_name, source_node_port,
+                        'cigration.cigration_move_shard_placement',
                         'DROP PUBLICATION IF EXISTS citus_move_shard_placement_pub CASCADE');
                 execute execute_sql;
             EXCEPTION WHEN QUERY_CANCELED or OTHERS THEN
@@ -3143,7 +3188,7 @@ BEGIN
         END IF;
 
         -- 从元数据中取出最新的分片位置，如果分片位置和任务记录一样的话不清理，报错
-        if (select count(*) <> 0 from pg_dist_shard_placement where nodename = target_node_name and shardid in (select unnest(shard_id_array))) then
+        if (select count(*) <> 0 from pg_dist_shard_placement where nodename = target_node_name and nodeport = target_node_port and shardid in (select unnest(shard_id_array))) then
             raise exception 'shardid:% is still active in this citus cluster,can not be deleted.',shard_id_array;
         end if;
 
@@ -3155,8 +3200,9 @@ BEGIN
                                  format('DROP TABLE IF EXISTS %s',
                                          shard_fulltablename_array[i]));
         
-                    execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_node, functionid, sql) values(%L, %L, %L, %L, %L)', 
-                            jobid_input, taskid_input, target_node_name, 'cigration.cigration_move_shard_placement',
+                    execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_nodename, execute_nodeport, functionid, sql) values(%L, %L, %L, %L, %L, %L)', 
+                            jobid_input, taskid_input, target_node_name, target_node_port,
+                            'cigration.cigration_move_shard_placement',
                             format('DROP TABLE IF EXISTS %s', shard_fulltablename_array[i]));
                     execute execute_sql;
                 EXCEPTION WHEN QUERY_CANCELED or OTHERS THEN
@@ -3342,7 +3388,7 @@ BEGIN
                  pg_dist_node a,
                  dblink(format('host=%s port=%s user=%s dbname=%s',a.nodename,a.nodeport,current_user, current_database()),
                     'SELECT nspname FROM pg_catalog.pg_namespace WHERE nspname ~ ''^cigration_recyclebin_'' ORDER BY 1') b(schemaname text)
-                 order by a.nodename;
+                 order by a.nodename, a.nodeport;
 END;
 $$ LANGUAGE plpgsql;
 

@@ -51,7 +51,7 @@ order by nodename,nodeport,logicalrelid,shardminvalue;
 --
 
 -- 创建迁移worker1的所有分片到worker3的job并获取第一个迁移任务的jobid和taskid
-select jobid, taskid from cigration_create_worker_migration_job(:'worker_1_host', :'worker_3_host') limit 1 \gset
+select jobid, taskid from cigration_create_worker_migration_job(:'worker_1_host', :worker_1_port, :'worker_3_host', :worker_3_port) limit 1 \gset
 
 select source_nodename,source_nodeport,target_nodename,target_nodeport,status,total_shard_count
 from pg_citus_shard_migration where jobid=:jobid and taskid=:taskid;

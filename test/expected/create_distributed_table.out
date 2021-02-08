@@ -142,7 +142,7 @@ select count(*) from dist1 a left join dist5 b on(a.c1=b.c1) left join dist6 c o
 -- 3. 存在迁移任务时，不允许创建hash分片表，防止破坏分片表的亲和依赖以及破坏分片的迁移目标
 --
 -- 创建分片迁移任务
-select jobid from cigration_create_worker_migration_job(:'worker_1_host', :'worker_3_host') limit 1 \gset
+select jobid from cigration_create_worker_migration_job(:'worker_1_host', :worker_1_port, :'worker_3_host', :worker_3_port) limit 1 \gset
 -- 创建hash分片表，期待异常
 create table dist7(c1 int primary key, c2 text);
 select cigration_create_distributed_table('dist7','c1', colocate_with=>'default');
@@ -187,9 +187,9 @@ from pg_dist_shard_placement p
      join pg_dist_shard s on(p.shardid = s.shardid)
 where logicalrelid::text ~ 'dist7'
 order by nodename,nodeport,logicalrelid,shardminvalue;
-   nodename    | nodeport | logicalrelid | shardminvalue | shardmaxvalue 
----------------+----------+--------------+---------------+---------------
- worker_2_host |    57638 | dist7        | -2147483648   | 2147483647
+ nodename  | nodeport | logicalrelid | shardminvalue | shardmaxvalue 
+-----------+----------+--------------+---------------+---------------
+ localhost |    57638 | dist7        | -2147483648   | 2147483647
 (1 row)
 
 with t as(
@@ -235,16 +235,16 @@ from pg_dist_shard_placement p
      join pg_dist_shard s on(p.shardid = s.shardid)
 where logicalrelid::text ~ 'dist8'
 order by nodename,nodeport,logicalrelid,shardminvalue;
-   nodename    | nodeport |                           logicalrelid                            | shardminvalue | shardmaxvalue 
----------------+----------+-------------------------------------------------------------------+---------------+---------------
- worker_2_host |    57638 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | 0             | 536870911
- worker_2_host |    57638 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | 1610612736    | 2147483647
- worker_2_host |    57638 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | -1610612736   | -1073741825
- worker_2_host |    57638 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | -536870912    | -1
- worker_3_host |    57639 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | 1073741824    | 1610612735
- worker_3_host |    57639 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | -1073741824   | -536870913
- worker_3_host |    57639 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | -2147483648   | -1610612737
- worker_3_host |    57639 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | 536870912     | 1073741823
+ nodename  | nodeport |                           logicalrelid                            | shardminvalue | shardmaxvalue 
+-----------+----------+-------------------------------------------------------------------+---------------+---------------
+ localhost |    57638 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | 0             | 536870911
+ localhost |    57638 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | 1610612736    | 2147483647
+ localhost |    57638 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | -1610612736   | -1073741825
+ localhost |    57638 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | -536870912    | -1
+ localhost |    57639 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | 1073741824    | 1610612735
+ localhost |    57639 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | -1073741824   | -536870913
+ localhost |    57639 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | -2147483648   | -1610612737
+ localhost |    57639 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | 536870912     | 1073741823
 (8 rows)
 
 with t as(

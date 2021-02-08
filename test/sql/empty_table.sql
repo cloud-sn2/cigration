@@ -42,7 +42,7 @@ order by nodename,nodeport,logicalrelid,shardminvalue;
 --
 
 -- 迁移worker1的所有分片到worker3（worker迁移）
-select jobid from cigration_create_worker_migration_job(:'worker_1_host', :'worker_3_host') limit 1 \gset
+select jobid from cigration_create_worker_migration_job(:'worker_1_host', :worker_1_port, :'worker_3_host', :worker_3_port) limit 1 \gset
 
 select cigration_run_shard_migration_job(:jobid);
 

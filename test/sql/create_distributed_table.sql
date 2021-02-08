@@ -84,7 +84,7 @@ select count(*) from dist1 a left join dist5 b on(a.c1=b.c1) left join dist6 c o
 --
 
 -- 创建分片迁移任务
-select jobid from cigration_create_worker_migration_job(:'worker_1_host', :'worker_3_host') limit 1 \gset
+select jobid from cigration_create_worker_migration_job(:'worker_1_host', :worker_1_port, :'worker_3_host', :worker_3_port) limit 1 \gset
 
 -- 创建hash分片表，期待异常
 create table dist7(c1 int primary key, c2 text);

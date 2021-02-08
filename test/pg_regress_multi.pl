@@ -356,9 +356,7 @@ else
     for (my $workerIndex = 1; $workerIndex <= $workerCount; $workerIndex++) {
         my $workerPort = $masterPort + $workerIndex;
         push(@workerPorts, $workerPort);
-        # push(@workerHosts, "localhost");
-		my $workHost = "worker_".$workerIndex."_host";
-		push(@workerHosts, $workHost);
+        push(@workerHosts, "localhost");
     }
 }
 
