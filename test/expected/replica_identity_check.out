@@ -48,7 +48,7 @@ order by nodename,nodeport,logicalrelid,shardminvalue;
 (8 rows)
 
 -- 创建并执行迁移任务
-select jobid, taskid from cigration_create_worker_migration_job(:'worker_1_host', :worker_1_port, :'worker_3_host', :worker_3_port) limit 1 \gset
+select jobid, taskid from cigration_create_move_node_job(:'worker_1_host', :worker_1_port, :'worker_3_host', :worker_3_port) limit 1 \gset
 select cigration_run_shard_migration_job(:jobid, with_replica_identity_check=>true);
 ERROR:  task 71 in job 11 start failed.check errors in the task_info table:cigration.pg_citus_shard_migration.
 CONTEXT:  PL/pgSQL function cigration.cigration_start_shard_migration_task(integer,integer,interval,boolean) line 33 at RAISE
@@ -155,7 +155,7 @@ order by nodename,nodeport,logicalrelid,shardminvalue;
 (8 rows)
 
 -- 创建并执行迁移任务
-select jobid, taskid from cigration_create_worker_migration_job(:'worker_1_host', :worker_1_port, :'worker_3_host', :worker_3_port) limit 1 \gset
+select jobid, taskid from cigration_create_move_node_job(:'worker_1_host', :worker_1_port, :'worker_3_host', :worker_3_port) limit 1 \gset
 select cigration_run_shard_migration_job(:jobid, with_replica_identity_check=>true);
  cigration_run_shard_migration_job 
 -----------------------------------

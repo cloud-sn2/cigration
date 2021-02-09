@@ -268,9 +268,9 @@ select cigration.cigration_cleanup_recyclebin(1);
 
 | **函数名称**                            | **返回类型** | **描述**                                    |
 | --------------------------------------- | ------------ | ------------------------------------------- |
-| cigration_create_worker_empty_job           | record       | 创建缩容分片迁移作业                        |
+| cigration_create_drain_node_job           | record       | 创建缩容分片迁移作业                        |
 | cigration_create_rebalance_job          | record       | 创建再均衡分片迁移作业                      |
-| cigration_create_worker_migration_job   | record       | 创建worker替换的分片迁移作业                |
+| cigration_create_move_node_job   | record       | 创建worker替换的分片迁移作业                |
 | cigration_run_shard_migration_job     | boolean      | 执行分片迁移作业                            |
 | cigration_cleanup_recyclebin            | void         | 清理旧分片                                  |
 | cigration_cancel_shard_migration_job    | text         | 取消分片迁移作业                            |

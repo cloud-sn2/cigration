@@ -84,7 +84,7 @@ order by nodename,nodeport,logicalrelid,shardminvalue;
 -- 2. 创建迁移任务（init）
 --
 -- 创建迁移worker1的所有分片到worker3的job并获取第一个迁移任务的jobid和taskid
-select jobid, taskid from cigration_create_worker_migration_job(:'worker_1_host', :worker_1_port, :'worker_3_host', :worker_3_port) limit 1 \gset
+select jobid, taskid from cigration_create_move_node_job(:'worker_1_host', :worker_1_port, :'worker_3_host', :worker_3_port) limit 1 \gset
 select source_nodename,source_nodeport,target_nodename,target_nodeport,status,total_shard_count
 from pg_citus_shard_migration where jobid=:jobid and taskid=:taskid;
  source_nodename | source_nodeport | target_nodename | target_nodeport | status | total_shard_count 
@@ -106,15 +106,15 @@ select cigration_monitor_shard_migration_task(:jobid, :taskid);
 (1 row)
 
 -- 禁止创建新的迁移作业
-select jobid, taskid from cigration_create_worker_empty_job(array[concat(:'worker_2_host', ':', :worker_2_port), concat(:'worker_3_host', ':', :worker_3_port)]);
+select jobid, taskid from cigration_create_drain_node_job(array[concat(:'worker_2_host', ':', :worker_2_port), concat(:'worker_3_host', ':', :worker_3_port)]);
 ERROR:  can not create a new job when there are some uncleanuped jobs.
-CONTEXT:  PL/pgSQL function cigration_create_worker_empty_job(text[]) line 16 at RAISE
+CONTEXT:  PL/pgSQL function cigration_create_drain_node_job(text[]) line 16 at RAISE
 select jobid, taskid from cigration_create_rebalance_job();
 ERROR:  can not create a new job when there are some uncleanuped jobs.
 CONTEXT:  PL/pgSQL function cigration_create_rebalance_job() line 16 at RAISE
-select jobid, taskid from cigration_create_worker_migration_job(:'worker_1_host', :worker_1_port, :'worker_3_host', :worker_3_port);
-ERROR:  can not create a new job when there are some uncleanuped jobs in localhost:57637 or localhost:57639.
-CONTEXT:  PL/pgSQL function cigration_create_worker_migration_job(text,integer,text,integer) line 20 at RAISE
+select jobid, taskid from cigration_create_move_node_job(:'worker_1_host', :worker_1_port, :'worker_3_host', :worker_3_port);
+ERROR:  can not create a new job when there are some uncleanuped jobs.
+CONTEXT:  PL/pgSQL function cigration_create_move_node_job(text,integer,text,integer) line 17 at RAISE
 -- 禁止取消和完成init迁移任务
 select cigration_cancel_shard_migration_task(:jobid, :taskid);
 ERROR:  only the task in running status can be canceled.

@@ -64,7 +64,7 @@ order by nodename,nodeport,logicalrelid,shardminvalue;
 --
 
 -- 迁移worker1的所有分片到worker3（worker迁移）
-select jobid from cigration_create_worker_migration_job(:'worker_1_host', :worker_1_port, :'worker_3_host', :worker_3_port) limit 1 \gset
+select jobid from cigration_create_move_node_job(:'worker_1_host', :worker_1_port, :'worker_3_host', :worker_3_port) limit 1 \gset
 
 select cigration_run_shard_migration_job(:jobid);
 
@@ -106,7 +106,7 @@ select count(*) from dist1 a left join dist2 b on(a.c1=b.c1) left join dist3 c o
 select count(*) from dist4;
 
 -- 从worker2和worker3迁移走所有分片（缩容）
-select jobid from cigration_create_worker_empty_job(array[concat(:'worker_2_host', ':', :worker_2_port), concat(:'worker_3_host', ':', :worker_3_port)]) limit 1 \gset
+select jobid from cigration_create_drain_node_job(array[concat(:'worker_2_host', ':', :worker_2_port), concat(:'worker_3_host', ':', :worker_3_port)]) limit 1 \gset
 
 select cigration_run_shard_migration_job(:jobid);
 

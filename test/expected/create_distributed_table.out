@@ -142,7 +142,7 @@ select count(*) from dist1 a left join dist5 b on(a.c1=b.c1) left join dist6 c o
 -- 3. 存在迁移任务时，不允许创建hash分片表，防止破坏分片表的亲和依赖以及破坏分片的迁移目标
 --
 -- 创建分片迁移任务
-select jobid from cigration_create_worker_migration_job(:'worker_1_host', :worker_1_port, :'worker_3_host', :worker_3_port) limit 1 \gset
+select jobid from cigration_create_move_node_job(:'worker_1_host', :worker_1_port, :'worker_3_host', :worker_3_port) limit 1 \gset
 -- 创建hash分片表，期待异常
 create table dist7(c1 int primary key, c2 text);
 select cigration_create_distributed_table('dist7','c1', colocate_with=>'default');

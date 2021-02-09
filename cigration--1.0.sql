@@ -1352,10 +1352,10 @@ END;
 $$ LANGUAGE plpgsql;
  
 
-CREATE OR REPLACE FUNCTION cigration.cigration_create_worker_empty_job(input_source_nodes text[])
+CREATE OR REPLACE FUNCTION cigration.cigration_create_drain_node_job(input_source_nodes text[])
 RETURNS TABLE(jobid integer,taskid integer,all_colocateion_shards_id bigint[],source_nodename text,source_nodeport integer,target_nodename text,target_nodeport integer,total_shard_count int,total_shard_size bigint)
 -- 
--- 函数名：cigration.cigration_create_worker_empty_job
+-- 函数名：cigration.cigration_create_drain_node_job
 -- 函数功能：创建一个缩容场景的JOB
 -- 参数：input_source_nodes text[]，形式类似：array['192.168.1.1:5432','192.168.1.2:5432']
 -- 返回值：返回生成的迁移任务记录
@@ -1370,7 +1370,7 @@ DECLARE
 BEGIN
     --执行节点必须是CN节点
     IF (SELECT CASE WHEN (select count(*) from pg_dist_node)>0 THEN (select groupid from pg_dist_local_group) ELSE -1 END) <> 0 THEN
-        RAISE EXCEPTION 'function cigration_create_worker_empty_job could only be executed on coordinate node.';
+        RAISE EXCEPTION 'function cigration_create_drain_node_job could only be executed on coordinate node.';
     END IF;
     
     --检查是否有未归档的JOB
@@ -1382,14 +1382,18 @@ BEGIN
     if (SELECT count(*) <> 0 FROM pg_dist_node WHERE noderole = 'primary' AND isactive = 'f') then
         RAISE EXCEPTION 'there are some invalid primary node in the cluster.';
     end if;
+
+    -- 输入参数检查
+    if (array_length(input_source_nodes,1) = 0) then
+        RAISE EXCEPTION 'input_source_nodes is empty';
+    end if;
     
     -- 判断输入源节点是否在集群中，不在就报错
     if (select count(*) <> array_length(input_source_nodes,1) from pg_dist_node where noderole = 'primary' and concat(nodename, ':', nodeport) = any(input_source_nodes)) then
         RAISE EXCEPTION 'some nodes in the parameter input_source_nodes are not in this citus cluster or not primary note.';
     end if;
 
-    perform cigration.cigration_print_log('cigration_create_worker_empty_job','check if workers in this citus cluster are all extended workers.');
-    -- 如果本次缩容把所有的存储分片表的WK都去掉了，那也有问题，报错退出
+    -- 如果本次缩容把所有的存储分片表的WK都去掉了，也有问题，报错退出
     if (select count(*) = 0 from pg_dist_node where noderole = 'primary' and shouldhaveshards = true and concat(nodename, ':', nodeport) <> all(input_source_nodes)) then
         RAISE EXCEPTION 'there are no normal workers left for shards migration after delete %.',input_source_nodes;
     end if;
@@ -1399,11 +1403,10 @@ BEGIN
     from pg_dist_node
     where noderole = 'primary' and shouldhaveshards = true and concat(nodename, ':', nodeport) <> all(input_source_nodes);
     
-    perform cigration.cigration_print_log('cigration_create_worker_empty_job','get actual source nodes for function cigration_generate_migration_strategy.');
     select array_agg(concat(nodename, ':', nodeport)) into source_node_list from pg_dist_node where noderole = 'primary';
     
-    perform cigration.cigration_print_log('cigration_create_worker_empty_job','call function cigration_generate_migration_strategy to generate a migration job.');
-    select cigration.cigration_generate_migration_strategy(source_node_list,target_node_list) into var_jobid;
+    perform cigration.cigration_print_log('cigration_create_drain_node_job','call function cigration_create_general_shard_migration_job to generate a migration job.');
+    select cigration.cigration_create_general_shard_migration_job(source_node_list,target_node_list) into var_jobid;
     
     RETURN QUERY select tb.jobid,tb.taskid,tb.all_colocateion_shards_id,tb.source_nodename,tb.source_nodeport,tb.target_nodename,tb.target_nodeport,tb.total_shard_count,tb.total_shard_size
                  from cigration.pg_citus_shard_migration as tb where tb.jobid = var_jobid;
@@ -1443,14 +1446,12 @@ BEGIN
     end if;
     
     -- 计算分片迁移的策略
-    perform cigration.cigration_print_log('cigration_create_rebalance_job','get actual source nodenames for function cigration_generate_migration_strategy.');
     select array_agg(concat(nodename, ':', nodeport)) into source_node_list from pg_dist_node where noderole = 'primary';
     
-    perform cigration.cigration_print_log('cigration_create_rebalance_job','get actual target nodenames for function cigration_generate_migration_strategy.');
     select array_agg(concat(nodename, ':', nodeport)) into strict target_node_list from pg_dist_node where noderole = 'primary' and shouldhaveshards = true;
     
-    perform cigration.cigration_print_log('cigration_create_rebalance_job','call function cigration_generate_migration_strategy to generate a migration job.');
-    select cigration.cigration_generate_migration_strategy(source_node_list,target_node_list) into var_jobid;
+    perform cigration.cigration_print_log('cigration_create_rebalance_job','call function cigration_create_general_shard_migration_job to generate a migration job.');
+    select cigration.cigration_create_general_shard_migration_job(source_node_list,target_node_list) into var_jobid;
     
     RETURN QUERY select tb.jobid,tb.taskid,tb.all_colocateion_shards_id,tb.source_nodename,tb.source_nodeport,tb.target_nodename,tb.target_nodeport,tb.total_shard_count,tb.total_shard_size
                  from cigration.pg_citus_shard_migration as tb where tb.jobid = var_jobid;
@@ -1458,10 +1459,10 @@ END;
 $$ LANGUAGE plpgsql;
 
 
-CREATE OR REPLACE FUNCTION cigration.cigration_create_worker_migration_job(input_source_nodename text, input_source_nodeport integer, input_target_nodename text, input_target_nodeport integer)
+CREATE OR REPLACE FUNCTION cigration.cigration_create_move_node_job(input_source_nodename text, input_source_nodeport integer, input_target_nodename text, input_target_nodeport integer)
 RETURNS TABLE(jobid integer,taskid integer,all_colocateion_shards_id bigint[],source_nodename text,source_nodeport integer,target_nodename text,target_nodeport integer,total_shard_count int,total_shard_size bigint)
 -- 
--- 函数名：cigration.cigration_create_worker_migration_job
+-- 函数名：cigration.cigration_create_move_node_job
 -- 函数功能：创建一个迁移场景的JOB
 -- 参数：input_source_nodename text，形式类似：'192.168.1.1'
 --       input_source_nodeport integer,
@@ -1480,15 +1481,12 @@ DECLARE
 BEGIN
     -- 执行节点必须是CN节点
     IF (SELECT CASE WHEN (select count(*) from pg_dist_node)>0 THEN (select groupid from pg_dist_local_group) ELSE -1 END) <> 0 THEN
-        RAISE EXCEPTION 'function cigration_create_worker_migration_job could only be executed on coordinate node.';
+        RAISE EXCEPTION 'function cigration_create_move_node_job could only be executed on coordinate node.';
     END IF;
     
     --检查是否有未归档的JOB
-    if (select count(*) <> 0 from cigration.pg_citus_shard_migration m
-        where array[concat(m.source_nodename,':',m.source_nodeport), concat(m.target_nodename,':',m.target_nodeport)] && 
-              array[concat(input_source_nodename,':',input_source_nodeport), concat(input_target_nodename,':',input_target_nodeport)]
-       ) then
-        RAISE EXCEPTION 'can not create a new job when there are some uncleanuped jobs in %:% or %:%.',input_source_nodename,input_source_nodeport,input_target_nodename,input_target_nodeport;
+    if (select count(*) <> 0 from cigration.pg_citus_shard_migration) then
+        RAISE EXCEPTION 'can not create a new job when there are some uncleanuped jobs.';
     end if;
     
     --检查集群健康状态
@@ -1511,8 +1509,8 @@ BEGIN
         RAISE EXCEPTION 'The shouldhaveshards property of the target nodes can not be false.';
     end if;
 
-    perform cigration.cigration_print_log('cigration_create_worker_migration_job','call function cigration_generate_migration_strategy to generate a migration job.');
-    select cigration.cigration_generate_migration_strategy(array[concat(input_source_nodename, ':', input_source_nodeport)], array[concat(input_target_nodename, ':', input_target_nodeport)]) into var_jobid;
+    perform cigration.cigration_print_log('cigration_create_move_node_job','call function cigration_create_general_shard_migration_job to generate a migration job.');
+    select cigration.cigration_create_general_shard_migration_job(array[concat(input_source_nodename, ':', input_source_nodeport)], array[concat(input_target_nodename, ':', input_target_nodeport)]) into var_jobid;
     
     RETURN QUERY select tb.jobid,tb.taskid,tb.all_colocateion_shards_id,tb.source_nodename,tb.source_nodeport,tb.target_nodename,tb.target_nodeport,tb.total_shard_count,tb.total_shard_size
                  from cigration.pg_citus_shard_migration as tb where tb.jobid = var_jobid;
@@ -1521,16 +1519,16 @@ $$ LANGUAGE plpgsql;
 
 
 
-CREATE OR REPLACE FUNCTION cigration.cigration_generate_migration_strategy(source_nodes text[],target_nodes text[])
+CREATE OR REPLACE FUNCTION cigration.cigration_create_general_shard_migration_job(source_nodes text[],target_nodes text[])
 RETURNS int
 -- 
--- 函数名：cigration.cigration_generate_migration_strategy
--- 函数功能：计算分片迁移的策略，得出源上的哪些分片需要迁移到哪些目标上
+-- 函数名：cigration.cigration_create_general_shard_migration_job
+-- 函数功能：实际创建迁移JOB，计算分片迁移的策略，得出源上的哪些分片需要迁移到哪些目标上
 -- 参数：source_nodes text[]，形式类似：array['192.168.1.1:5432','xx.xx.xx.xx:5432']
 --       target_nodes text[]，形式类似：array['192.168.1.2:5432']
 -- 返回值：int job的id值
 -- 
-AS $cigration_generate_migration_strategy$
+AS $cigration_create_general_shard_migration_job$
 DECLARE
     logical_tb record;
     parent_tbnames regclass[];
@@ -1569,6 +1567,24 @@ DECLARE
     create_schema_info text;
     create_schema_execute_info record;
 BEGIN
+    -- 执行节点必须是CN节点
+    IF (SELECT CASE WHEN (select count(*) from pg_dist_node)>0 THEN (select groupid from pg_dist_local_group) ELSE -1 END) <> 0 THEN
+        RAISE EXCEPTION 'function cigration_create_move_node_job could only be executed on coordinate node.';
+    END IF;
+    
+    --检查是否有涉及输入节点的未归档的JOB
+    if (select count(*) <> 0 from cigration.pg_citus_shard_migration m
+        where array[concat(m.source_nodename,':',m.source_nodeport), concat(m.target_nodename,':',m.target_nodeport)] && 
+              (source_nodes || target_nodes)
+       ) then
+        RAISE EXCEPTION 'can not create a new job when there are some uncleanuped jobs in source_nodes:% or target_nodes:%.',source_nodes,target_nodes;
+    end if;
+    
+    --检查集群健康状态
+    if (SELECT count(*) <> 0 FROM pg_dist_node WHERE noderole = 'primary' AND isactive = 'f') then
+        RAISE EXCEPTION 'there are some invalid primary node in the cluster.';
+    end if;
+
     -- 输入参数检查
     if (array_length(source_nodes,1) = 0) then
         RAISE EXCEPTION 'source_nodes is empty';
@@ -1576,6 +1592,21 @@ BEGIN
 
     if (array_length(target_nodes,1) = 0) then
         RAISE EXCEPTION 'target_nodes is empty';
+    end if;
+
+    -- 判断输入源节点是否在集群中，不在就报错
+    if (select count(*) <> array_length(source_nodes,1) from pg_dist_node where noderole = 'primary' and concat(nodename, ':', nodeport) = any(source_nodes)) then
+        RAISE EXCEPTION 'some nodes in the parameter source_nodes are not in this citus cluster or not primary note.';
+    end if;
+
+    -- 判断输入目的节点是否在集群中，不在就报错
+    if (select count(*) <> array_length(target_nodes,1) from pg_dist_node where noderole = 'primary' and concat(nodename, ':', nodeport) = any(target_nodes)) then
+        RAISE EXCEPTION 'some nodes in the parameter target_nodes are not in this citus cluster or not primary note.';
+    end if;
+    
+    -- 判断输入目的节点的shouldhaveshards属性是否都为true，不满足就报错
+    if (select count(*) <> array_length(target_nodes,1) from pg_dist_node where shouldhaveshards = true and concat(nodename, ':', nodeport) = any(target_nodes)) then
+        RAISE EXCEPTION 'some nodes in the parameter target_nodes are not in this citus cluster or not primary note.';
     end if;
 
     -- 生成每次任务的ID
@@ -1746,11 +1777,11 @@ BEGIN
         end if;
     end loop;
     
-    RAISE DEBUG 'cigration_generate_migration_strategy : % ',create_schema_info;
+    RAISE DEBUG 'cigration_create_general_shard_migration_job : % ',create_schema_info;
     
     return var_jobid;
 END;
-$cigration_generate_migration_strategy$ LANGUAGE plpgsql;
+$cigration_create_general_shard_migration_job$ LANGUAGE plpgsql;
 
 
 

@@ -39,7 +39,7 @@ from pg_dist_shard_placement p
 order by nodename,nodeport,logicalrelid,shardminvalue;
 
 -- 创建并执行迁移任务
-select jobid, taskid from cigration_create_worker_migration_job(:'worker_1_host', :worker_1_port, :'worker_3_host', :worker_3_port) limit 1 \gset
+select jobid, taskid from cigration_create_move_node_job(:'worker_1_host', :worker_1_port, :'worker_3_host', :worker_3_port) limit 1 \gset
 
 select cigration_run_shard_migration_job(:jobid, with_replica_identity_check=>true);
 
@@ -101,7 +101,7 @@ from pg_dist_shard_placement p
 order by nodename,nodeport,logicalrelid,shardminvalue;
 
 -- 创建并执行迁移任务
-select jobid, taskid from cigration_create_worker_migration_job(:'worker_1_host', :worker_1_port, :'worker_3_host', :worker_3_port) limit 1 \gset
+select jobid, taskid from cigration_create_move_node_job(:'worker_1_host', :worker_1_port, :'worker_3_host', :worker_3_port) limit 1 \gset
 
 select cigration_run_shard_migration_job(:jobid, with_replica_identity_check=>true);
 
