@@ -83,9 +83,13 @@ select count(*) from dist1 a left join dist2 b on(a.c1=b.c1) left join dist3 c o
 select count(*) from dist4;
 
 -- 分片再平衡(扩容)
+-- 无job时，启动job报错
+select cigration_run_shard_migration_job();
+
 select jobid from cigration_create_rebalance_job() limit 1 \gset
 
-select cigration_run_shard_migration_job(:jobid);
+-- 有唯一job时，可以省略jobid启动job
+select cigration_run_shard_migration_job();
 
 select nodename,
        nodeport,

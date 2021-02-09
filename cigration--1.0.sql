@@ -2555,7 +2555,7 @@ END;
 $cigration_cancel_shard_migration_task$ LANGUAGE plpgsql;
 
 
-CREATE OR REPLACE FUNCTION cigration.cigration_cancel_shard_migration_job(jobid_input int,taskid_input int default null)
+CREATE OR REPLACE FUNCTION cigration.cigration_cancel_shard_migration_job(jobid_input int default null,taskid_input int default null)
 RETURNS text
 -- 
 -- 函数名：cigration.cigration_cancel_shard_migration_job
@@ -2569,7 +2569,19 @@ BEGIN
     IF (SELECT CASE WHEN (select count(*) from pg_dist_node)>0 THEN (select groupid from pg_dist_local_group) ELSE -1 END) <> 0 THEN
         RAISE EXCEPTION 'function cigration_cancel_shard_migration_job could only be executed on coordinate node.';
     END IF;
-    
+
+    --判断jobid_input是否为空
+    IF (jobid_input is null) THEN
+        IF (SELECT COUNT(distinct jobid) FROM cigration.pg_citus_shard_migration) > 1 THEN
+            RAISE EXCEPTION 'There is more than one job, the jobid must be specified explicitly.';
+        ELSIF (SELECT COUNT(distinct jobid) FROM cigration.pg_citus_shard_migration) = 1 THEN
+            SELECT distinct jobid INTO STRICT jobid_input FROM cigration.pg_citus_shard_migration;
+        ELSE
+            RAISE WARNING 'there are no migration job';
+            RETURN true;
+        END IF;
+    END IF;
+
     if (taskid_input is null) then
         -- 判断任务状态
         if (select count(*) <> 0 from cigration.pg_citus_shard_migration where jobid = jobid_input and status = 'running') then
@@ -3440,10 +3452,11 @@ BEGIN
 END;
 $cigration_generate_parallel_schedule$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION cigration.cigration_run_shard_migration_job(jobid_input int, taskids int[] default NULL,
-                                                                         init_sync_timeout int default 7200,
-                                                                         longtime_tx_threshold interval default '30 min',
-                                                                         with_replica_identity_check boolean default false)
+CREATE OR REPLACE FUNCTION cigration.cigration_run_shard_migration_job(jobid_input int default NULL,
+                                                                       taskids int[] default NULL,
+                                                                       init_sync_timeout int default 7200,
+                                                                       longtime_tx_threshold interval default '30 min',
+                                                                       with_replica_identity_check boolean default false)
 RETURNS boolean
 -- 
 -- 函数名：cigration.cigration_run_shard_migration_job
@@ -3476,6 +3489,18 @@ BEGIN
     --执行节点必须是CN节点
     IF (SELECT CASE WHEN (select count(*) from pg_dist_node)>0 THEN (select groupid from pg_dist_local_group) ELSE -1 END) <> 0 THEN
         RAISE EXCEPTION 'function cigration_run_shard_migration_job could only be executed on coordinate node.';
+    END IF;
+
+    --判断jobid_input是否为空
+    IF (jobid_input is null) THEN
+        IF (SELECT COUNT(distinct jobid) FROM cigration.pg_citus_shard_migration) > 1 THEN
+            RAISE EXCEPTION 'There is more than one job, the jobid must be specified explicitly.';
+        ELSIF (SELECT COUNT(distinct jobid) FROM cigration.pg_citus_shard_migration) = 1 THEN
+            SELECT distinct jobid INTO STRICT jobid_input FROM cigration.pg_citus_shard_migration;
+        ELSE
+            RAISE WARNING 'there are no migration job';
+            RETURN true;
+        END IF;
     END IF;
 
     IF (taskids is null) THEN
