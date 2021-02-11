@@ -61,6 +61,54 @@ select cigration.cigration_create_distributed_table('"12345678901234567890123456
 (1 row)
 
 insert into "1234567890123456789012345678901234567890_Maxdist_01234567890123" select generate_series(1,100000), 'ddd';
+-- 创建和普通分片表亲和的unlogged分片表,期待异常报错
+create unlogged table tb_unlogged(c1 int primary key, c2 text);
+select create_distributed_table('tb_unlogged','c1', colocate_with=>'dist1');
+ create_distributed_table 
+--------------------------
+ 
+(1 row)
+
+select * from cigration_create_move_node_job(:'worker_1_host', :worker_1_port, :'worker_3_host', :worker_3_port);
+ERROR:  there are unlogged distributed table which colocate with normal distributed table in 1 colocation groups.
+CONTEXT:  PL/pgSQL function cigration_create_general_shard_migration_job(text[],text[]) line 102 at RAISE
+SQL statement "select cigration.cigration_create_general_shard_migration_job(array[concat(input_source_nodename, ':', input_source_nodeport)], array[concat(input_target_nodename, ':', input_target_nodeport)])"
+PL/pgSQL function cigration_create_move_node_job(text,integer,text,integer) line 41 at SQL statement
+drop table tb_unlogged;
+-- 创建独立的unlogged分片表，期待被分片任务排除
+create unlogged table tb_unlogged(c1 int primary key, c2 text);
+select create_distributed_table('tb_unlogged','c1', colocate_with=>'none');
+ create_distributed_table 
+--------------------------
+ 
+(1 row)
+
+-- 创建多副本分片表，期待被分片任务排除
+create table tb_two_replica(c1 int primary key, c2 text);
+set citus.shard_replication_factor = 2;
+select cigration.cigration_create_distributed_table('tb_two_replica','c1');
+ cigration_create_distributed_table 
+------------------------------------
+ 
+(1 row)
+
+reset citus.shard_replication_factor;
+-- 创建append分片表，期待被分片任务排除
+create table tb_append(c1 int primary key, c2 text);
+select cigration.cigration_create_distributed_table('tb_append','c1','append');
+ cigration_create_distributed_table 
+------------------------------------
+ 
+(1 row)
+
+-- 创建参考表，期待被分片任务排除
+create table tb_ref(c1 int primary key, c2 text);
+select create_reference_table('tb_ref');
+ create_reference_table 
+------------------------
+ 
+(1 row)
+
 -- 查看所有分片的初始分布
 select nodename,
        nodeport,
@@ -125,6 +173,13 @@ select cigration_run_shard_migration_job(:jobid);
 -----------------------------------
  t
 (1 row)
+
+-- 迁移任务中应不包含非'dist'表
+select * from pg_citus_shard_migration
+where all_colocateion_shards_id && (select array_agg(shardid) from pg_dist_shard where not logicalrelid::text ~ 'dist');
+ jobid | taskid | source_nodename | source_nodeport | target_nodename | target_nodeport | status | all_colocateion_shards_id | all_colocateion_shards_size | total_shard_count | total_shard_size | create_time | start_time | end_time | error_message 
+-------+--------+-----------------+-----------------+-----------------+-----------------+--------+---------------------------+-----------------------------+-------------------+------------------+-------------+------------+----------+---------------
+(0 rows)
 
 select nodename,
        nodeport,

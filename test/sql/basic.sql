@@ -47,6 +47,29 @@ select cigration.cigration_create_distributed_table('"12345678901234567890123456
 
 insert into "1234567890123456789012345678901234567890_Maxdist_01234567890123" select generate_series(1,100000), 'ddd';
 
+-- 创建和普通分片表亲和的unlogged分片表,期待异常报错
+create unlogged table tb_unlogged(c1 int primary key, c2 text);
+select create_distributed_table('tb_unlogged','c1', colocate_with=>'dist1');
+select * from cigration_create_move_node_job(:'worker_1_host', :worker_1_port, :'worker_3_host', :worker_3_port);
+drop table tb_unlogged;
+
+-- 创建独立的unlogged分片表，期待被分片任务排除
+create unlogged table tb_unlogged(c1 int primary key, c2 text);
+select create_distributed_table('tb_unlogged','c1', colocate_with=>'none');
+
+-- 创建多副本分片表，期待被分片任务排除
+create table tb_two_replica(c1 int primary key, c2 text);
+set citus.shard_replication_factor = 2;
+select cigration.cigration_create_distributed_table('tb_two_replica','c1');
+reset citus.shard_replication_factor;
+
+-- 创建append分片表，期待被分片任务排除
+create table tb_append(c1 int primary key, c2 text);
+select cigration.cigration_create_distributed_table('tb_append','c1','append');
+
+-- 创建参考表，期待被分片任务排除
+create table tb_ref(c1 int primary key, c2 text);
+select create_reference_table('tb_ref');
 
 -- 查看所有分片的初始分布
 select nodename,
@@ -67,6 +90,10 @@ order by nodename,nodeport,logicalrelid,shardminvalue;
 select jobid from cigration_create_move_node_job(:'worker_1_host', :worker_1_port, :'worker_3_host', :worker_3_port) limit 1 \gset
 
 select cigration_run_shard_migration_job(:jobid);
+
+-- 迁移任务中应不包含非'dist'表
+select * from pg_citus_shard_migration
+where all_colocateion_shards_id && (select array_agg(shardid) from pg_dist_shard where not logicalrelid::text ~ 'dist');
 
 select nodename,
        nodeport,

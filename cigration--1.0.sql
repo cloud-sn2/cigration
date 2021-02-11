@@ -1535,6 +1535,7 @@ DECLARE
     tbname_list_without_parenttb regclass[];
     representative_rel regclass;
     shard_count integer;
+    mix_unlogged_colocationid_count integer;
     
     upper_limit integer;
     lower_limit integer;
@@ -1608,6 +1609,28 @@ BEGIN
     if (select count(*) <> array_length(target_nodes,1) from pg_dist_node where shouldhaveshards = true and concat(nodename, ':', nodeport) = any(target_nodes)) then
         RAISE EXCEPTION 'some nodes in the parameter target_nodes are not in this citus cluster or not primary note.';
     end if;
+    
+    -- 检查是否存在和普通分片表亲和的unlogged分片表
+    with t as
+    (
+        select logicalrelid, count(*) shard_count
+        from (select logicalrelid, min(shardid) min_shardid from pg_dist_shard group by logicalrelid) s 
+             join pg_dist_placement p on(s.min_shardid = p.shardid)
+        group by logicalrelid
+    ),t2 as(
+    select d.colocationid, count(distinct c.relpersistence) persistence_count
+    from pg_dist_partition d 
+         join pg_class c on(d.logicalrelid = c.oid)
+         join t on( d.logicalrelid = t.logicalrelid)
+    where partmethod = 'h' and t.shard_count = 1
+    group by d.colocationid
+    having count(distinct c.relpersistence) > 1
+    )
+    select count(*) into mix_unlogged_colocationid_count from t2;
+    
+    if (mix_unlogged_colocationid_count > 0) then
+        RAISE EXCEPTION 'there are unlogged distributed table which colocate with normal distributed table in % colocation groups.', mix_unlogged_colocationid_count;
+    end if;
 
     -- 生成每次任务的ID
     select nextval('cigration.jobid_seq') into strict var_jobid;
@@ -1620,7 +1643,20 @@ BEGIN
         source_nodename := split_part(source_node_element, ':', 1);
         source_nodeport := split_part(source_node_element, ':', 2)::int;
 
-        for logical_tb in select array_agg(logicalrelid) as tb_list,colocationid from pg_dist_partition where partmethod = 'h' group by colocationid
+        for logical_tb in
+            with t as
+            (
+                select logicalrelid, count(*) shard_count
+                from (select logicalrelid, min(shardid) min_shardid from pg_dist_shard group by logicalrelid) s 
+                     join pg_dist_placement p on(s.min_shardid = p.shardid)
+                group by logicalrelid
+            )
+            select array_agg(d.logicalrelid) as tb_list, d.colocationid
+            from pg_dist_partition d 
+                 join pg_class c on(d.logicalrelid = c.oid)
+                 join t on( d.logicalrelid = t.logicalrelid)
+            where partmethod = 'h' and c.relpersistence = 'p' and t.shard_count = 1
+            group by d.colocationid
         loop
             -- 把分区主表筛选出来，如果有的话
             -- 分区主表不先筛选出来，后面选择亲和的分片时，每个分区都会和分区主表亲和一次，会冗余产生冲突
@@ -3550,7 +3586,7 @@ BEGIN
     SELECT sum(total_shard_size) INTO task_total_size from cigration.pg_citus_shard_migration where jobid=jobid_input and taskid in (select unnest(target_taskids));
     SELECT pg_size_pretty(task_total_size) INTO pg_size_pretty_total;
 
-    for recordinfo in SELECT taskid, source_nodename, target_nodename, status, error_message, total_shard_size from cigration.pg_citus_shard_migration where jobid=jobid_input and taskid in (select unnest(target_taskids)) ORDER BY taskid loop
+    for recordinfo in SELECT taskid, source_nodename, source_nodeport, target_nodename, target_nodeport, status, error_message, total_shard_size from cigration.pg_citus_shard_migration where jobid=jobid_input and taskid in (select unnest(target_taskids)) ORDER BY taskid loop
         --check task status
         IF recordinfo.status = 'error' THEN
             raise 'Task[%] of job[%] is in error status because of ''%''. Please calling ''SELECT cigration.cigration_cleanup_error_env()'' to cleanup!', recordinfo.taskid, jobid_input, recordinfo.error_message;
@@ -3597,7 +3633,7 @@ BEGIN
 
                 -- checking the execute result of cigration_complete_shard_migration_task
                 IF exec_result_msg != 'complete' THEN
-                    raise warning 'Method cigration.cigration_complete_shard_migration_task(%, %, init_sync_timeout=>%) finished with ''%'' when migrating from % to %, please calling ''cigration.cigration_run_shard_migration_job'' again!', jobid_input, recordinfo.taskid, init_sync_timeout, exec_result_msg, recordinfo.source_nodename, recordinfo.target_nodename;
+                    raise warning 'Method cigration.cigration_complete_shard_migration_task(%, %, init_sync_timeout=>%) finished with ''%'' when migrating from %:% to %:%, please calling ''cigration.cigration_run_shard_migration_job'' again!', jobid_input, recordinfo.taskid, init_sync_timeout, exec_result_msg, recordinfo.source_nodename, recordinfo.source_nodeport, recordinfo.target_nodename, recordinfo.target_nodeport;
                     return false;
                 END IF;
             END IF;

@@ -297,7 +297,7 @@ order by nodename,nodeport,logicalrelid,shardminvalue;
 select count(*) from dist1 a left join dist2 b on(a.c1=b.c1) left join dist3 c on (a.c1=c.c1);
  count  
 --------
- 100000
+ 100001
 (1 row)
 
 -- 重置被取消的迁移任务
