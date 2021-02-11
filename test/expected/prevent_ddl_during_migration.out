@@ -65,7 +65,7 @@ from pg_citus_shard_migration where jobid=:jobid and taskid=:taskid;
 --
 -- 3. 变更表定义（init）
 --
--- 可以更新还未开始迁移的表
+-- 可以变更还未开始迁移的表
 alter table dist1 add c3 text;
 create index dist1_idx on dist1(c2);
 alter index dist1_idx rename to dist1_idx2;
@@ -79,6 +79,13 @@ CONTEXT:  PL/pgSQL function prevent_drop_table_in_migration_task() line 8 at RAI
 drop schema if exists cigration_regress_test cascade;
 ERROR:  Can not drop table cigration_regress_test.dist1 which is in shard migration task
 CONTEXT:  PL/pgSQL function prevent_drop_table_in_migration_task() line 8 at RAISE
+-- 允许变更不相关的表
+create table tb1(id int);
+alter table tb1 add c2 text;
+create index tb1_idx on tb1(c2);
+alter index tb1_idx rename to tb1_idx2;
+drop index tb1_idx2;
+drop table tb1;
 --
 -- 4. 变更表定义（running）
 --
@@ -91,20 +98,34 @@ select cigration_start_shard_migration_task(:jobid, :taskid);
 -- 禁止变更已开始迁移的表，期待异常
 alter table dist1 add c4 text;
 ERROR:  "ALTER TABLE,CREATE INDEX,ALTER INDEX,DROP INDEX" SQL is forbidden during shard migration.
-CONTEXT:  PL/pgSQL function cigration_prevent_ddl_command_on_tables() line 3 at RAISE
+CONTEXT:  PL/pgSQL function prevent_alter_table_in_running_migration_task() line 4 at RAISE
 create index dist1_idx_err on dist1(c2);
 ERROR:  "ALTER TABLE,CREATE INDEX,ALTER INDEX,DROP INDEX" SQL is forbidden during shard migration.
-CONTEXT:  PL/pgSQL function cigration_prevent_ddl_command_on_tables() line 3 at RAISE
+CONTEXT:  PL/pgSQL function prevent_alter_table_in_running_migration_task() line 4 at RAISE
 alter index dist1_idx rename to dist1_idx2;
 ERROR:  "ALTER TABLE,CREATE INDEX,ALTER INDEX,DROP INDEX" SQL is forbidden during shard migration.
-CONTEXT:  PL/pgSQL function cigration_prevent_ddl_command_on_tables() line 3 at RAISE
+CONTEXT:  PL/pgSQL function prevent_alter_table_in_running_migration_task() line 4 at RAISE
 drop index dist1_idx;
 ERROR:  "ALTER TABLE,CREATE INDEX,ALTER INDEX,DROP INDEX" SQL is forbidden during shard migration.
-CONTEXT:  PL/pgSQL function cigration_prevent_ddl_command_on_tables() line 3 at RAISE
+CONTEXT:  PL/pgSQL function prevent_alter_table_in_running_migration_task() line 4 at RAISE
 -- 禁止删除迁移任务中存在的表，期待异常
 drop table dist1;
 ERROR:  Can not drop table cigration_regress_test.dist1 which is in shard migration task
 CONTEXT:  PL/pgSQL function prevent_drop_table_in_migration_task() line 8 at RAISE
+-- 允许创建和删除不相关的表(暂不支持alter排除不相关的表)
+create table tb1(id int);
+alter table tb1 add c2 text;
+ERROR:  "ALTER TABLE,CREATE INDEX,ALTER INDEX,DROP INDEX" SQL is forbidden during shard migration.
+CONTEXT:  PL/pgSQL function prevent_alter_table_in_running_migration_task() line 4 at RAISE
+create index tb1_idx on tb1(c2);
+ERROR:  "ALTER TABLE,CREATE INDEX,ALTER INDEX,DROP INDEX" SQL is forbidden during shard migration.
+CONTEXT:  PL/pgSQL function prevent_alter_table_in_running_migration_task() line 4 at RAISE
+alter index tb1_idx rename to tb1_idx2;
+ERROR:  relation "tb1_idx" does not exist
+drop index tb1_idx2;
+ERROR:  "ALTER TABLE,CREATE INDEX,ALTER INDEX,DROP INDEX" SQL is forbidden during shard migration.
+CONTEXT:  PL/pgSQL function prevent_alter_table_in_running_migration_task() line 4 at RAISE
+drop table tb1;
 --
 -- 5. 完成迁移（cleanuped）
 --
@@ -164,9 +185,9 @@ group by nodename,nodeport
 order by nodename,nodeport;
  nodename  | nodeport | count 
 -----------+----------+-------
- localhost |    57637 |     1
- localhost |    57638 |     1
- localhost |    57639 |     1
+ localhost |    57637 |     2
+ localhost |    57638 |     2
+ localhost |    57639 |     2
 (3 rows)
 
 select cigration_cleanup_recyclebin();

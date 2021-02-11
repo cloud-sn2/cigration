@@ -118,10 +118,10 @@ CONTEXT:  PL/pgSQL function cigration_create_move_node_job(text,integer,text,int
 -- 禁止取消和完成init迁移任务
 select cigration_cancel_shard_migration_task(:jobid, :taskid);
 ERROR:  only the task in running status can be canceled.
-CONTEXT:  PL/pgSQL function cigration_cancel_shard_migration_task(integer,integer) line 37 at RAISE
+CONTEXT:  PL/pgSQL function cigration_cancel_shard_migration_task(integer,integer) line 35 at RAISE
 select cigration_complete_shard_migration_task(:jobid, :taskid);
 ERROR:  only running status is supported,but now is init.
-CONTEXT:  PL/pgSQL function cigration_complete_shard_migration_task(integer,integer,integer,integer,bigint,integer,boolean) line 48 at RAISE
+CONTEXT:  PL/pgSQL function cigration_complete_shard_migration_task(integer,integer,integer,integer,bigint,integer,boolean) line 46 at RAISE
 -- 禁止对非completed迁移任务删除旧分片
 select cigration_drop_old_shard(:jobid, :taskid);
 ERROR:  task [52] in job [6] is not completed.
@@ -178,10 +178,10 @@ select cigration_monitor_shard_migration_task(:jobid, :taskid);
 -- 禁止取消完成canceled迁移任务
 select cigration_cancel_shard_migration_task(:jobid, :taskid);
 ERROR:  only the task in running status can be canceled.
-CONTEXT:  PL/pgSQL function cigration_cancel_shard_migration_task(integer,integer) line 37 at RAISE
+CONTEXT:  PL/pgSQL function cigration_cancel_shard_migration_task(integer,integer) line 35 at RAISE
 select cigration_complete_shard_migration_task(:jobid, :taskid);
 ERROR:  only running status is supported,but now is canceled.
-CONTEXT:  PL/pgSQL function cigration_complete_shard_migration_task(integer,integer,integer,integer,bigint,integer,boolean) line 48 at RAISE
+CONTEXT:  PL/pgSQL function cigration_complete_shard_migration_task(integer,integer,integer,integer,bigint,integer,boolean) line 46 at RAISE
 --
 -- 5. 构造运行出错的迁移任务（init->error）
 --
@@ -198,7 +198,7 @@ CONTEXT:  SQL statement "SELECT dblink_connect(dblink_target_con_name,
                                     target_node_port,
                                     current_user,
                                     current_database()))"
-PL/pgSQL function cigration_move_shard_placement(integer,integer,interval,boolean) line 108 at PERFORM
+PL/pgSQL function cigration_move_shard_placement(integer,integer,interval,boolean) line 105 at PERFORM
 SQL statement "select cigration.cigration_move_shard_placement(jobid_input,taskid_input,longtime_tx_threshold,with_replica_identity_check)"
 PL/pgSQL function cigration_start_shard_migration_task(integer,integer,interval,boolean) line 27 at SQL statement
 select status from pg_citus_shard_migration where jobid=:jobid and taskid=:taskid;
@@ -219,10 +219,10 @@ ERROR:  jobid:[6] task:[52] does not exists or the status is not "init".
 CONTEXT:  PL/pgSQL function cigration_start_shard_migration_task(integer,integer,interval,boolean) line 23 at RAISE
 select cigration_cancel_shard_migration_task(:jobid, :taskid);
 ERROR:  only the task in running status can be canceled.
-CONTEXT:  PL/pgSQL function cigration_cancel_shard_migration_task(integer,integer) line 37 at RAISE
+CONTEXT:  PL/pgSQL function cigration_cancel_shard_migration_task(integer,integer) line 35 at RAISE
 select cigration_complete_shard_migration_task(:jobid, :taskid);
 ERROR:  only running status is supported,but now is error.
-CONTEXT:  PL/pgSQL function cigration_complete_shard_migration_task(integer,integer,integer,integer,bigint,integer,boolean) line 48 at RAISE
+CONTEXT:  PL/pgSQL function cigration_complete_shard_migration_task(integer,integer,integer,integer,bigint,integer,boolean) line 46 at RAISE
 -- 禁止对非completed迁移任务删除旧分片
 select cigration_drop_old_shard(:jobid, :taskid);
 ERROR:  task [52] in job [6] is not completed.
@@ -272,7 +272,7 @@ select cigration_complete_shard_migration_task(:jobid, :taskid);
 ERROR:  could not establish connection
 DETAIL:  could not translate host name "faked_host" to address: Name or service not known
 CONTEXT:  SQL statement "SELECT dblink_connect(dblink_target_name,format('host=%s port=%s user=%s dbname=%s',target_node_name,i_target_node_port,current_user,current_database()))"
-PL/pgSQL function cigration_complete_shard_migration_task(integer,integer,integer,integer,bigint,integer,boolean) line 75 at PERFORM
+PL/pgSQL function cigration_complete_shard_migration_task(integer,integer,integer,integer,bigint,integer,boolean) line 73 at PERFORM
 select status from pg_citus_shard_migration where jobid=:jobid and taskid=:taskid;
  status  
 ---------
@@ -283,7 +283,7 @@ select cigration_monitor_shard_migration_task(:jobid, :taskid);
 ERROR:  could not establish connection
 DETAIL:  could not translate host name "faked_host" to address: Name or service not known
 CONTEXT:  SQL statement "SELECT dblink_connect(dblink_target_name,format('host=%s port=%s user=%s dbname=%s',target_node_name,i_target_node_port,current_user,current_database()))"
-PL/pgSQL function cigration_complete_shard_migration_task(integer,integer,integer,integer,bigint,integer,boolean) line 75 at PERFORM
+PL/pgSQL function cigration_complete_shard_migration_task(integer,integer,integer,integer,bigint,integer,boolean) line 73 at PERFORM
 SQL statement "select cigration.cigration_complete_shard_migration_task(jobid_input,taskid_input,check_only=>true)"
 PL/pgSQL function cigration_monitor_shard_migration_task(integer,integer) line 5 at SQL statement
 -- 解除故障
@@ -327,10 +327,10 @@ select count(*) from dist1 a left join dist2 b on(a.c1=b.c1) left join dist3 c o
 -- 禁止取消，启动，完成completed迁移任务
 select cigration_cancel_shard_migration_task(:jobid, :taskid);
 ERROR:  only the task in running status can be canceled.
-CONTEXT:  PL/pgSQL function cigration_cancel_shard_migration_task(integer,integer) line 37 at RAISE
+CONTEXT:  PL/pgSQL function cigration_cancel_shard_migration_task(integer,integer) line 35 at RAISE
 select cigration_complete_shard_migration_task(:jobid, :taskid);
 ERROR:  only running status is supported,but now is completed.
-CONTEXT:  PL/pgSQL function cigration_complete_shard_migration_task(integer,integer,integer,integer,bigint,integer,boolean) line 48 at RAISE
+CONTEXT:  PL/pgSQL function cigration_complete_shard_migration_task(integer,integer,integer,integer,bigint,integer,boolean) line 46 at RAISE
 select cigration_start_shard_migration_task(:jobid, :taskid);
 ERROR:  jobid:[6] task:[52] does not exists or the status is not "init".
 CONTEXT:  PL/pgSQL function cigration_start_shard_migration_task(integer,integer,interval,boolean) line 23 at RAISE
@@ -357,10 +357,10 @@ select status from pg_citus_shard_migration_history where jobid=:jobid and taski
 -- 禁止对归档迁移任务执行调度操作
 select cigration_cancel_shard_migration_task(:jobid, :taskid);
 ERROR:  only the task in running status can be canceled.
-CONTEXT:  PL/pgSQL function cigration_cancel_shard_migration_task(integer,integer) line 37 at RAISE
+CONTEXT:  PL/pgSQL function cigration_cancel_shard_migration_task(integer,integer) line 35 at RAISE
 select cigration_complete_shard_migration_task(:jobid, :taskid);
 ERROR:  query returned no rows
-CONTEXT:  PL/pgSQL function cigration_complete_shard_migration_task(integer,integer,integer,integer,bigint,integer,boolean) line 43 at SQL statement
+CONTEXT:  PL/pgSQL function cigration_complete_shard_migration_task(integer,integer,integer,integer,bigint,integer,boolean) line 41 at SQL statement
 select cigration_start_shard_migration_task(:jobid, :taskid);
 ERROR:  jobid:[6] task:[52] does not exists or the status is not "init".
 CONTEXT:  PL/pgSQL function cigration_start_shard_migration_task(integer,integer,interval,boolean) line 23 at RAISE

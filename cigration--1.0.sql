@@ -87,21 +87,20 @@ EXECUTE PROCEDURE cigration.prevent_drop_table_in_migration_task();
 -- 
 -- 创建事件触发器，在迁移期间阻止对正在迁移的表执行"ALTER TABLE,CREATE INDEX,ALTER INDEX,DROP INDEX"
 -- 
-DROP FUNCTION IF EXISTS cigration.cigration_prevent_ddl_command_on_tables() CASCADE;
-CREATE OR REPLACE FUNCTION cigration.cigration_prevent_ddl_command_on_tables()
+CREATE OR REPLACE FUNCTION cigration.prevent_alter_table_in_running_migration_task()
 RETURNS event_trigger 
 AS $$
 BEGIN
-    RAISE EXCEPTION '"ALTER TABLE,CREATE INDEX,ALTER INDEX,DROP INDEX" SQL is forbidden during shard migration.';
+    IF (select count(*) <> 0 from cigration.pg_citus_shard_migration where status = 'running') THEN
+        RAISE EXCEPTION '"ALTER TABLE,CREATE INDEX,ALTER INDEX,DROP INDEX" SQL is forbidden during shard migration.';
+    END IF;
 END;
-$$ LANGUAGE plpgsql ;
+$$ LANGUAGE plpgsql;
 
-CREATE EVENT TRIGGER prevent_ddl_command_during_migration
+CREATE EVENT TRIGGER prevent_alter_table_during_migration
 ON ddl_command_start WHEN TAG IN ('ALTER TABLE','CREATE INDEX','ALTER INDEX','DROP INDEX')
-EXECUTE PROCEDURE cigration.cigration_prevent_ddl_command_on_tables();
+EXECUTE PROCEDURE cigration.prevent_alter_table_in_running_migration_task();
 
---  时间触发器初始化后，先disable掉，迁移开始再开启-- 
-ALTER EVENT TRIGGER prevent_ddl_command_during_migration DISABLE ;
 
 -- 
 -- 自定义序列，用于生成jobid
@@ -1983,9 +1982,7 @@ DECLARE
     
     -- insert into cigration.pg_citus_shard_migration_sql_log
     execute_sql text;
-    
-    --让触发器失效
-    event_trigger_disable_sql text := $tg_ddl$ alter event trigger prevent_ddl_command_during_migration disable;$tg_ddl$;
+
 BEGIN
     -- 执行节点必须是CN节点
     IF (SELECT CASE WHEN (select count(*) from pg_dist_node)>0 THEN (select groupid from pg_dist_local_group) ELSE -1 END) <> 0 THEN
@@ -2125,12 +2122,6 @@ BEGIN
                             if (check_only is false) then
                                 -- 更新元数据
                                 perform cigration.cigration_update_metadata_after_migration(jobid_input,taskid_input);
-                                
-                                if (select count(*) = 1 from cigration.pg_citus_shard_migration where status = 'running') then
-                                    -- 禁掉事件触发器
-                                    perform cigration.cigration_print_log('cigration_complete_shard_migration_task','disable event trigger.');
-                                    execute (event_trigger_disable_sql);
-                                end if;
                                 
                                 -- 清理掉发布和订阅
                                 perform cigration.cigration_print_log('cigration_complete_shard_migration_task','cleanup subscription and publication.');
@@ -2517,9 +2508,7 @@ DECLARE
     
     -- insert into cigration.pg_citus_shard_migration_sql_log
     execute_sql text;
-        
-    -- 让触发器失效
-    event_trigger_disable_sql text := $tg_ddl$ alter event trigger prevent_ddl_command_during_migration disable;$tg_ddl$;
+
 BEGIN
     -- 执行节点必须是CN节点
     IF (SELECT CASE WHEN (select count(*) from pg_dist_node)>0 THEN (select groupid from pg_dist_local_group) ELSE -1 END) <> 0 THEN
@@ -2630,12 +2619,6 @@ BEGIN
             CONTINUE;
         END;
     end loop;
-    
-    -- 禁掉事件触发器
-    -- 除了这个即将取消的任务之外没有别的正在运行的任务的话，就禁掉
-    if (select count(*) = 1 from cigration.pg_citus_shard_migration where status = 'running') then
-        execute (event_trigger_disable_sql);
-    end if;
     
     -- 更新JOB表
     update cigration.pg_citus_shard_migration set status = 'canceled',start_time = null where jobid = jobid_input and taskid = taskid_input;
@@ -2773,9 +2756,6 @@ DECLARE
     -- 异常处理变量
     error_msg text;
     
-    --事件触发器drop DDL
-    event_trigger_disable_sql text := $tg_ddl$ alter event trigger prevent_ddl_command_during_migration disable;$tg_ddl$;
-    
     -- 判断是否有订阅和发布
     has_sub int;
     has_pub int;
@@ -2903,18 +2883,6 @@ BEGIN
         -- 将该任务恢复成init状态，同时清空error_message字段
         update cigration.pg_citus_shard_migration set status = 'init',error_message = null where jobid = task_info.jobid and taskid = task_info.taskid;
     end loop;
-    
-    -- 没有error状态的任务时，仅清理CN本地的残留
-    BEGIN       
-        -- 没有running状态的任务的话，才能把事件触发器禁掉
-        if (select count(*) = 0 from cigration.pg_citus_shard_migration where status = 'running') then
-            -- 禁掉事件触发器
-            execute (event_trigger_disable_sql);
-        end if;
-    EXCEPTION WHEN QUERY_CANCELED or OTHERS THEN
-        GET STACKED DIAGNOSTICS error_msg = MESSAGE_TEXT;
-        RAISE EXCEPTION 'failed to call dblink_disconnect:%', error_msg;
-    END;
     
 EXCEPTION WHEN QUERY_CANCELED or OTHERS THEN
     -- 清理dblink
@@ -3071,9 +3039,6 @@ DECLARE
     -- 迁移前的检查
     check_result text := '';
     
-    -- 事件触发器启用的SQL
-    event_trigger_enable_sql text := $tg_ddl$ alter event trigger prevent_ddl_command_during_migration enable; $tg_ddl$;
-    
     -- insert into cigration.pg_citus_shard_migration_sql_log
     execute_sql text;
 BEGIN
@@ -3154,11 +3119,6 @@ BEGIN
                                     target_node_port,
                                     current_user,
                                     current_database()));
-
-    if (select evtenabled = 'D' from pg_event_trigger where evtname = 'prevent_ddl_command_during_migration') then
-        --  启用事件触发器阻止DDL修改需要迁移的分片表
-        EXECUTE (event_trigger_enable_sql);
-    end if;
     
     BEGIN
         -- CREATE PUBLICATION in source node

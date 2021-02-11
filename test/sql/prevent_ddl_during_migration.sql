@@ -57,7 +57,7 @@ from pg_citus_shard_migration where jobid=:jobid and taskid=:taskid;
 -- 3. 变更表定义（init）
 --
 
--- 可以更新还未开始迁移的表
+-- 可以变更还未开始迁移的表
 alter table dist1 add c3 text;
 create index dist1_idx on dist1(c2);
 alter index dist1_idx rename to dist1_idx2;
@@ -69,6 +69,14 @@ drop table dist1;
 
 -- 禁止级联删除迁移任务中存在的表，期待异常
 drop schema if exists cigration_regress_test cascade;
+
+-- 允许变更不相关的表
+create table tb1(id int);
+alter table tb1 add c2 text;
+create index tb1_idx on tb1(c2);
+alter index tb1_idx rename to tb1_idx2;
+drop index tb1_idx2;
+drop table tb1;
 
 --
 -- 4. 变更表定义（running）
@@ -83,6 +91,14 @@ drop index dist1_idx;
 
 -- 禁止删除迁移任务中存在的表，期待异常
 drop table dist1;
+
+-- 允许创建和删除不相关的表(暂不支持alter排除不相关的表)
+create table tb1(id int);
+alter table tb1 add c2 text;
+create index tb1_idx on tb1(c2);
+alter index tb1_idx rename to tb1_idx2;
+drop index tb1_idx2;
+drop table tb1;
 
 --
 -- 5. 完成迁移（cleanuped）
