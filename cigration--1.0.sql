@@ -1809,10 +1809,6 @@ BEGIN
                             raise debug '% has been chosen to be the target node',target_node_element;
                             raise debug 'target_has_been_chosen : % ',target_has_been_chosen;
                             
-                            -- 取出缩容WK上的实际端口值(仅用于CN和worker之间有中间件，CN元数据中的worker端口不是实际端口场景，比如pgbouncer，haparoxy)
-                            -- select cigration.cigration_get_worker_port(source_nodename_element) into strict var_source_nodeport;
-                            -- select cigration.cigration_get_worker_port(target_node_element) into strict var_target_nodeport;
-                            
                             -- 将该task信息写入job表中，需要判断入参中提供的端口号是空还是具体值
                             insert into cigration.pg_citus_shard_migration (jobid,source_nodename,source_nodeport,target_nodename,target_nodeport,
                                                                             colocationid,all_colocateion_shards_id,all_colocateion_shards_size,all_colocateion_logicalrels,
@@ -3017,6 +3013,8 @@ DECLARE
     source_node_port integer;
     target_node_name text;
     target_node_port integer;
+    i_source_node_port integer;
+    i_target_node_port integer;
     target_shard_tables_with_data text;
     colocated_table_count integer;
     i integer;
@@ -3094,10 +3092,20 @@ BEGIN
     -- debug info
     raise debug 'shard_fulltablename_array_without_partition:%',shard_fulltablename_array_without_partition;
 
+    -- 获取WK上的实际端口值(适用于CN和worker之间有中间件，CN元数据中的worker端口不是实际端口场景，比如pgbouncer，haparoxy)
+    SELECT port 
+    INTO i_source_node_port 
+    FROM dblink(format('host=%s port=%s user=%s dbname=%s', source_node_name, source_node_port, current_user, current_database()),
+                      $$SELECT setting FROM pg_settings WHERE name = 'port'$$) AS tb(port integer);
+    SELECT port 
+    INTO i_target_node_port 
+    FROM dblink(format('host=%s port=%s user=%s dbname=%s', target_node_name, target_node_port, current_user, current_database()),
+                      $$SELECT setting FROM pg_settings WHERE name = 'port'$$) AS tb(port integer);
+
     RAISE  NOTICE  'BEGIN move shards(%) from %:% to %:%', 
                 array_to_string(shard_id_array,','),
-                source_node_name, source_node_port,
-                target_node_name, target_node_port;
+                source_node_name, i_source_node_port,
+                target_node_name, i_target_node_port;
 
     -- debug信息
     raise debug 'shard_fulltablename_array:%',shard_fulltablename_array;
@@ -3107,7 +3115,7 @@ BEGIN
     PERFORM dblink_connect(dblink_source_con_name,
                             format('host=%s port=%s user=%s dbname=%s',
                                     source_node_name,
-                                    source_node_port,
+                                    i_source_node_port,
                                     current_user,
                                     current_database()));
     dblink_created := true;
@@ -3116,13 +3124,13 @@ BEGIN
     PERFORM dblink_connect(dblink_target_con_name,
                             format('host=%s port=%s user=%s dbname=%s',
                                     target_node_name,
-                                    target_node_port,
+                                    i_target_node_port,
                                     current_user,
                                     current_database()));
     
     BEGIN
         -- CREATE PUBLICATION in source node
-        RAISE  NOTICE  'CREATE PUBLICATION in source node %:%', source_node_name, source_node_port;
+        RAISE  NOTICE  'CREATE PUBLICATION in source node %:%', source_node_name, i_source_node_port;
         -- PERFORM dblink_exec(dblink_source_con_name, 'DROP PUBLICATION IF EXISTS citus_move_shard_placement_pub CASCADE');
         PERFORM dblink_exec(dblink_source_con_name, 
                             format('CREATE PUBLICATION citus_move_shard_placement_pub 
@@ -3130,7 +3138,7 @@ BEGIN
                                      (select string_agg(table_name,',') from unnest(shard_fulltablename_array_without_partition) table_name)));
 
         execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_nodename, execute_nodeport, functionid, sql) values(%L, %L, %L, %L, %L, %L)', 
-                jobid_input, taskid_input, source_node_name, source_node_port,
+                jobid_input, taskid_input, source_node_name, i_source_node_port,
                 'cigration.cigration_move_shard_placement',
                 format('CREATE PUBLICATION citus_move_shard_placement_pub FOR TABLE %s',
                         (select string_agg(table_name,',') from unnest(shard_fulltablename_array_without_partition) table_name)));
@@ -3149,15 +3157,15 @@ BEGIN
         END LOOP;
         
         -- create shard table in the target node
-        RAISE  NOTICE  'create shard table in the target node %:%', target_node_name, target_node_port;
+        RAISE  NOTICE  'create shard table in the target node %:%', target_node_name, i_target_node_port;
         EXECUTE format($sql$COPY (select '') to PROGRAM $$pg_dump "host=%s port=%s user=%s dbname=%s" -s -t %s | psql "host=%s port=%s user=%s dbname=%s"$$ $sql$,
                         source_node_name,
-                        source_node_port,
+                        i_source_node_port,
                         current_user,
                         current_database(),
                         (select string_agg(format($a$'%s'$a$,table_name),' -t ') from unnest(shard_fulltablename_array) table_name),
                         target_node_name,
-                        target_node_port,
+                        i_target_node_port,
                         current_user,
                         current_database());
 
@@ -3179,31 +3187,31 @@ BEGIN
         -- logical slots name
         select 'slot_' || replace(target_node_name,'.','_') into logical_slot_name;
         -- conneect source node to create a logical slot for subscription first
-        RAISE  NOTICE  'CREATE LOGICAL SLOT on source node %:%', source_node_name, source_node_port;
+        RAISE  NOTICE  'CREATE LOGICAL SLOT on source node %:%', source_node_name, i_source_node_port;
         PERFORM-- 
         from dblink(dblink_source_con_name, 
                     format('select pg_create_logical_replication_slot(''%s'',''pgoutput'')',logical_slot_name)) as tmp(func_return text);
         -- CREATE SUBSCRIPTION on target node
-        RAISE  NOTICE  'CREATE SUBSCRIPTION on target node %:%', target_node_name, target_node_port;
+        RAISE  NOTICE  'CREATE SUBSCRIPTION on target node %:%', target_node_name, i_target_node_port;
         --PERFORM dblink_exec(dblink_target_con_name,'DROP SUBSCRIPTION IF EXISTS citus_move_shard_placement_sub CASCADE');
         PERFORM dblink_exec(dblink_target_con_name, 
                             format($$CREATE SUBSCRIPTION citus_move_shard_placement_sub
                                          CONNECTION 'host=%s port=%s user=%s dbname=%s'
                                          PUBLICATION citus_move_shard_placement_pub with (create_slot = false,slot_name = '%s')$$,
                                          source_node_name,
-                                         source_node_port,
+                                         i_source_node_port,
                                          current_user,
                                          current_database(),
                                          logical_slot_name));
         
         execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_nodename, execute_nodeport, functionid, sql) values(%L, %L, %L, %L, %L, %L)', 
-                jobid_input, taskid_input, target_node_name, target_node_port,
+                jobid_input, taskid_input, target_node_name, i_target_node_port,
                 'cigration.cigration_move_shard_placement',
                 format($$CREATE SUBSCRIPTION citus_move_shard_placement_sub
                                          CONNECTION 'host=%s port=%s user=%s dbname=%s'
                                          PUBLICATION citus_move_shard_placement_pub with (create_slot = false,slot_name = '%s')$$,
                                          source_node_name,
-                                         source_node_port,
+                                         i_source_node_port,
                                          current_user,
                                          current_database(),
                                          logical_slot_name));
@@ -3236,7 +3244,7 @@ BEGIN
                                     'DROP SUBSCRIPTION IF EXISTS citus_move_shard_placement_sub CASCADE');
         
                 execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_nodename, execute_nodeport, functionid, sql) values(%L, %L, %L, %L, %L, %L)', 
-                        jobid_input, taskid_input, target_node_name, target_node_port,
+                        jobid_input, taskid_input, target_node_name, i_target_node_port,
                         'cigration.cigration_move_shard_placement',
                         'DROP SUBSCRIPTION IF EXISTS citus_move_shard_placement_sub CASCADE');
                 execute execute_sql;
@@ -3252,7 +3260,7 @@ BEGIN
                                 'DROP PUBLICATION IF EXISTS citus_move_shard_placement_pub CASCADE');
         
                 execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_nodename, execute_nodeport, functionid, sql) values(%L, %L, %L, %L, %L, %L)', 
-                        jobid_input, taskid_input, source_node_name, source_node_port,
+                        jobid_input, taskid_input, source_node_name, i_source_node_port,
                         'cigration.cigration_move_shard_placement',
                         'DROP PUBLICATION IF EXISTS citus_move_shard_placement_pub CASCADE');
                 execute execute_sql;
@@ -3276,7 +3284,7 @@ BEGIN
                                          shard_fulltablename_array[i]));
         
                     execute_sql := format('insert into cigration.pg_citus_shard_migration_sql_log (jobid, taskid, execute_nodename, execute_nodeport, functionid, sql) values(%L, %L, %L, %L, %L, %L)', 
-                            jobid_input, taskid_input, target_node_name, target_node_port,
+                            jobid_input, taskid_input, target_node_name, i_target_node_port,
                             'cigration.cigration_move_shard_placement',
                             format('DROP TABLE IF EXISTS %s', shard_fulltablename_array[i]));
                     execute execute_sql;
@@ -3303,106 +3311,6 @@ BEGIN
 END;
 $cigration_move_shard_placement$ 
 LANGUAGE plpgsql;
-
-
-CREATE OR REPLACE FUNCTION cigration.cigration_get_worker_port(wk_nodename text[])
-RETURNS int[]
--- 
--- 函数名：cigration.cigration_get_worker_port
--- 函数功能：获取citus集群的worker的实际端口号
--- 参数：wk_nodename text[]
--- 返回值：wk_nodeport
--- 
-AS $cigration_get_worker_port$
-DECLARE
-    wk_pgb_port int[];
-    wk_nodeport int[];
-    var_wk_nodename text;
-    nodename_index int := 1;
-    
-    --dblink参数
-    con_name text := 'dblink_to_get_port';
-BEGIN
-    -- 执行节点必须是CN节点
-    IF (SELECT CASE WHEN (select count(*) from pg_dist_node)>0 THEN (select groupid from pg_dist_local_group) ELSE -1 END) <> 0 THEN
-        RAISE EXCEPTION 'function cigration_get_worker_port could only be executed on coordinate node.';
-    END IF;
-    
-    -- 获取每个wk对应的pgb的端口号
-    foreach var_wk_nodename in array wk_nodename
-    loop
-        select array_append(wk_pgb_port, nodeport)
-        into wk_pgb_port
-        from pg_dist_node where nodename = var_wk_nodename;
-    end loop;
-    
-    -- 通过WK上的pgbouncer去取出每个WK上实际的port参数值
-    foreach var_wk_nodename in array wk_nodename
-    loop
-        perform dblink_connect(con_name,format('host=%s port=%s dbname=%s user=%s',var_wk_nodename,wk_pgb_port[nodename_index],current_database(),current_user));
-        
-        select array_append(wk_nodeport, port_num)
-        from dblink(con_name,$dblink_sql$select setting from pg_settings where name = 'port'$dblink_sql$) as (port_num int)
-        into wk_nodeport;
-        
-        perform dblink_disconnect(con_name);
-    end loop;
-    
-    return wk_nodeport;
-    
-EXCEPTION WHEN QUERY_CANCELED or OTHERS THEN
-    PERFORM dblink_disconnect(con) 
-    FROM (select unnest(a) con from dblink_get_connections() a)b 
-    WHERE con = 'dblink_to_get_port';
-    
-    raise;
-END;
-$cigration_get_worker_port$ LANGUAGE plpgsql;
-
-
-CREATE OR REPLACE FUNCTION cigration.cigration_get_worker_port(wk_nodename text)
-RETURNS int
--- 
--- 函数名：cigration.cigration_get_worker_port
--- 函数功能：获取citus集群的worker的实际端口号
--- 参数：wk_nodename text
--- 返回值：wk_nodeport
--- 
-AS $cigration_get_worker_port$
-DECLARE
-    wk_pgb_port int;
-    wk_nodeport int;
-    
-    --dblink参数
-    con_name text := 'dblink_to_get_port';
-BEGIN
-    -- 执行节点必须是CN节点
-    IF (SELECT CASE WHEN (select count(*) from pg_dist_node)>0 THEN (select groupid from pg_dist_local_group) ELSE -1 END) <> 0 THEN
-        RAISE EXCEPTION 'function cigration_get_worker_port could only be executed on coordinate node.';
-    END IF;
-    
-    -- 获取wk对应的pgb的端口号
-    select nodeport into wk_pgb_port from pg_dist_node where nodename = wk_nodename;
-    
-    -- 通过WK上的pgbouncer去取出每个WK上实际的port参数值
-    perform dblink_connect(con_name,format('host=%s port=%s dbname=%s user=%s',wk_nodename,wk_pgb_port,current_database(),current_user));
-        
-    select port_num
-    from dblink(con_name,$dblink_sql$select setting from pg_settings where name = 'port'$dblink_sql$) as (port_num int)
-    into wk_nodeport;
-        
-    perform dblink_disconnect(con_name);
-    
-    return wk_nodeport;
-    
-EXCEPTION WHEN QUERY_CANCELED or OTHERS THEN
-    PERFORM dblink_disconnect(con) 
-    FROM (select unnest(a) con from dblink_get_connections() a)b 
-    WHERE con = 'dblink_to_get_port';
-    
-    raise;
-END;
-$cigration_get_worker_port$ LANGUAGE plpgsql;
 
 
 CREATE OR REPLACE FUNCTION cigration.cigration_cleanup_recyclebin(jobid_input integer default null)

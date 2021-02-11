@@ -192,13 +192,10 @@ update pg_citus_shard_migration set target_nodename = 'faked_host' where jobid=:
 select cigration_start_shard_migration_task(:jobid, :taskid);
 ERROR:  could not establish connection
 DETAIL:  could not translate host name "faked_host" to address: Name or service not known
-CONTEXT:  SQL statement "SELECT dblink_connect(dblink_target_con_name,
-                            format('host=%s port=%s user=%s dbname=%s',
-                                    target_node_name,
-                                    target_node_port,
-                                    current_user,
-                                    current_database()))"
-PL/pgSQL function cigration_move_shard_placement(integer,integer,interval,boolean) line 105 at PERFORM
+CONTEXT:  SQL statement "SELECT port 
+                                 FROM dblink(format('host=%s port=%s user=%s dbname=%s', target_node_name, target_node_port, current_user, current_database()),
+                      $$SELECT setting FROM pg_settings WHERE name = 'port'$$) AS tb(port integer)"
+PL/pgSQL function cigration_move_shard_placement(integer,integer,interval,boolean) line 93 at SQL statement
 SQL statement "select cigration.cigration_move_shard_placement(jobid_input,taskid_input,longtime_tx_threshold,with_replica_identity_check)"
 PL/pgSQL function cigration_start_shard_migration_task(integer,integer,interval,boolean) line 27 at SQL statement
 select status from pg_citus_shard_migration where jobid=:jobid and taskid=:taskid;
