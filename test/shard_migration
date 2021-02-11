@@ -6,3 +6,4 @@ test: partitioned_table
 test: replica_identity_check
 test: empty_table
 test: create_distributed_table
+test: prevent_ddl_during_migration

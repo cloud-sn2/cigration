@@ -65,19 +65,39 @@ DROP TYPE IF EXISTS cigration.migration_status CASCADE;
 CREATE TYPE cigration.migration_status AS ENUM('init','running','completed','error','canceled');
 
 -- 
--- 创建事件触发器，在迁移期间阻止"ALTER TABLE,CREATE INDEX,DROP INDEX,DROP TABLE"
+-- 创建事件触发器，在迁移期间阻止删除迁移任务中存在的表
+-- 
+CREATE OR REPLACE FUNCTION cigration.prevent_drop_table_in_migration_task()
+        RETURNS event_trigger LANGUAGE plpgsql AS $$
+DECLARE
+    obj record;
+BEGIN
+    FOR obj IN SELECT * FROM pg_event_trigger_dropped_objects() WHERE object_type = 'table'
+    LOOP
+        IF (select count(*) <> 0 from cigration.pg_citus_shard_migration where obj.object_identity = any (all_colocateion_logicalrels)) THEN
+            RAISE EXCEPTION 'Can not drop table % which is in shard migration task',obj.object_identity;       
+        END IF;
+    END LOOP;
+END
+$$;
+CREATE EVENT TRIGGER prevent_drop_table_during_migration
+ON sql_drop
+EXECUTE PROCEDURE cigration.prevent_drop_table_in_migration_task();
+
+-- 
+-- 创建事件触发器，在迁移期间阻止对正在迁移的表执行"ALTER TABLE,CREATE INDEX,ALTER INDEX,DROP INDEX"
 -- 
 DROP FUNCTION IF EXISTS cigration.cigration_prevent_ddl_command_on_tables() CASCADE;
 CREATE OR REPLACE FUNCTION cigration.cigration_prevent_ddl_command_on_tables()
 RETURNS event_trigger 
 AS $$
 BEGIN
-    RAISE EXCEPTION '"ALTER TABLE,CREATE INDEX,DROP INDEX,DROP TABLE" SQL is forbidden during shard migration.';
+    RAISE EXCEPTION '"ALTER TABLE,CREATE INDEX,ALTER INDEX,DROP INDEX" SQL is forbidden during shard migration.';
 END;
 $$ LANGUAGE plpgsql ;
 
 CREATE EVENT TRIGGER prevent_ddl_command_during_migration
-ON ddl_command_start WHEN TAG IN ('ALTER TABLE','CREATE INDEX','DROP INDEX','DROP TABLE')
+ON ddl_command_start WHEN TAG IN ('ALTER TABLE','CREATE INDEX','ALTER INDEX','DROP INDEX')
 EXECUTE PROCEDURE cigration.cigration_prevent_ddl_command_on_tables();
 
 --  时间触发器初始化后，先disable掉，迁移开始再开启-- 
@@ -101,8 +121,10 @@ source_nodeport integer not null,
 target_nodename    text not null,
 target_nodeport    integer not null,
 status cigration.migration_status not null default 'init'::cigration.migration_status,
+colocationid    integer not null,
 all_colocateion_shards_id   bigint[] not null,
 all_colocateion_shards_size    bigint[] not null,
+all_colocateion_logicalrels    text[] not null,
 total_shard_count   integer not null,
 total_shard_size    bigint not null,
 create_time timestamp not null,
@@ -112,8 +134,10 @@ error_message    text
 );
 
 COMMENT ON COLUMN cigration.pg_citus_shard_migration.status IS '该task的状态，包含init，running，completed，error，canceled';
+COMMENT ON COLUMN cigration.pg_citus_shard_migration.colocationid IS '该组亲和关系的亲和ID';
 COMMENT ON COLUMN cigration.pg_citus_shard_migration.all_colocateion_shards_id IS '该组亲和关系中，每个分片的shardid';
 COMMENT ON COLUMN cigration.pg_citus_shard_migration.all_colocateion_shards_size IS '该组亲和关系中，每个分片的大小，顺序与id列一一对应';
+COMMENT ON COLUMN cigration.pg_citus_shard_migration.all_colocateion_logicalrels IS '该组亲和关系中，每个分片的逻辑表的识别符(shcema名.table名)';
 COMMENT ON COLUMN cigration.pg_citus_shard_migration.total_shard_count IS '该组亲和关系中，所有的分片数总和';
 COMMENT ON COLUMN cigration.pg_citus_shard_migration.total_shard_size IS '该组亲和关系中，所有的分片的总大小';
 
@@ -131,8 +155,10 @@ source_nodeport integer not null,
 target_nodename    text not null,
 target_nodeport    integer not null,
 status cigration.migration_status not null,
+colocationid    integer not null,
 all_colocateion_shards_id   bigint[] not null,
 all_colocateion_shards_size    bigint[] not null,
+all_colocateion_logicalrels    text[] not null,
 total_shard_count   integer not null,
 total_shard_size    bigint not null,
 create_time timestamp not null,
@@ -142,8 +168,10 @@ error_message    text
 );
 
 COMMENT ON COLUMN cigration.pg_citus_shard_migration_history.status IS '该task的状态，包含init，running，completed，error，canceled';
+COMMENT ON COLUMN cigration.pg_citus_shard_migration_history.colocationid IS '该组亲和关系的亲和ID';
 COMMENT ON COLUMN cigration.pg_citus_shard_migration_history.all_colocateion_shards_id IS '该组亲和关系中，每个分片的shardid';
 COMMENT ON COLUMN cigration.pg_citus_shard_migration_history.all_colocateion_shards_size IS '该组亲和关系中，每个分片的大小，顺序与id列一一对应';
+COMMENT ON COLUMN cigration.pg_citus_shard_migration_history.all_colocateion_logicalrels IS '该组亲和关系中，每个分片的逻辑表的识别符(shcema名.table名)';
 COMMENT ON COLUMN cigration.pg_citus_shard_migration_history.total_shard_count IS '该组亲和关系中，所有的分片数总和';
 COMMENT ON COLUMN cigration.pg_citus_shard_migration_history.total_shard_size IS '该组亲和关系中，所有的分片的总大小';
 
@@ -1553,8 +1581,10 @@ DECLARE
     var_total_shard_count int;
     var_all_colocateion_shards_id bigint[];
     parent_shardid_list bigint[];
+    parent_logicalrel_list text[];
     var_total_shard_size bigint;
     var_all_colocateion_shards_size bigint[];
+    var_all_colocateion_logicalrels text[];
     target_node_element text;
     target_nodename text;
     target_nodeport integer;
@@ -1716,13 +1746,13 @@ BEGIN
                 loop
                     -- 找出与tmp_shardid_list亲和的所有分片
                     if ( parent_tbnames is not null ) then
-                        SELECT count(*),array_agg(shardid)
-                        into strict var_total_shard_count,var_all_colocateion_shards_id
+                        SELECT count(*),array_agg(shardid),array_agg((select identity from pg_identify_object('pg_class'::regclass,logicalrelid,0)))
+                        into strict var_total_shard_count,var_all_colocateion_shards_id,var_all_colocateion_logicalrels
                         FROM pg_dist_shard 
                         WHERE shardid in (select shardid from pg_dist_shard where logicalrelid in (select unnest(tbname_list_without_parenttb)::regclass)) and (shardminvalue,shardmaxvalue)=(select shardminvalue,shardmaxvalue from pg_dist_shard where shardid = tmp_shardid ORDER BY shardid ASC);
                     else
-                        SELECT count(*),array_agg(shardid)
-                        into strict var_total_shard_count,var_all_colocateion_shards_id
+                        SELECT count(*),array_agg(shardid),array_agg((select identity from pg_identify_object('pg_class'::regclass,logicalrelid,0)))
+                        into strict var_total_shard_count,var_all_colocateion_shards_id,var_all_colocateion_logicalrels
                         FROM pg_dist_shard 
                         WHERE shardid in (select shardid from pg_dist_shard where logicalrelid in (select unnest(logical_tb.tb_list)::regclass)) and (shardminvalue,shardmaxvalue)=(select shardminvalue,shardmaxvalue from pg_dist_shard where shardid = tmp_shardid ORDER BY shardid ASC);
                     end if;
@@ -1734,8 +1764,8 @@ BEGIN
                     
                     -- 将分区主表加到var_all_colocateion_shards_id列中
                     if ( parent_tbnames is not null ) then
-                        select array_agg(a.shardid)
-                        into strict parent_shardid_list
+                        select array_agg(a.shardid),array_agg((select identity from pg_identify_object('pg_class'::regclass,a.logicalrelid,0)))
+                        into strict parent_shardid_list,parent_logicalrel_list
                         from pg_dist_shard a,pg_dist_shard_placement b 
                         where a.shardid = b.shardid
 						      and logicalrelid in (select unnest(parent_tbnames)::regclass)
@@ -1744,6 +1774,8 @@ BEGIN
 
                         var_total_shard_count := var_total_shard_count + array_length(parent_shardid_list,1);
                         var_all_colocateion_shards_id := array_cat(parent_shardid_list,var_all_colocateion_shards_id);
+                        var_all_colocateion_logicalrels := array_cat(parent_logicalrel_list,var_all_colocateion_logicalrels);
+
                         select array_cat(array_agg(0::bigint),var_all_colocateion_shards_size)
                         into strict var_all_colocateion_shards_size
                         from generate_series(1,array_length(parent_shardid_list,1))id;
@@ -1783,8 +1815,12 @@ BEGIN
                             -- select cigration.cigration_get_worker_port(target_node_element) into strict var_target_nodeport;
                             
                             -- 将该task信息写入job表中，需要判断入参中提供的端口号是空还是具体值
-                            insert into cigration.pg_citus_shard_migration (jobid,source_nodename,source_nodeport,target_nodename,target_nodeport,all_colocateion_shards_id,all_colocateion_shards_size,total_shard_count,total_shard_size,create_time)
-                            values (var_jobid,source_nodename,source_nodeport,target_nodename,target_nodeport,var_all_colocateion_shards_id,var_all_colocateion_shards_size,var_total_shard_count,var_total_shard_size,now());
+                            insert into cigration.pg_citus_shard_migration (jobid,source_nodename,source_nodeport,target_nodename,target_nodeport,
+                                                                            colocationid,all_colocateion_shards_id,all_colocateion_shards_size,all_colocateion_logicalrels,
+                                                                            total_shard_count,total_shard_size,create_time)
+                            values (var_jobid,source_nodename,source_nodeport,target_nodename,target_nodeport,
+                                    logical_tb.colocationid,var_all_colocateion_shards_id,var_all_colocateion_shards_size,var_all_colocateion_logicalrels,
+                                    var_total_shard_count,var_total_shard_size,now());
 
                             exit;
                         end if;
