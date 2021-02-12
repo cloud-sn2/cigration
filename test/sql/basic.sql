@@ -93,7 +93,7 @@ select cigration_run_shard_migration_job(:jobid);
 
 -- 迁移任务中应不包含非'dist'表
 select * from pg_citus_shard_migration
-where all_colocateion_shards_id && (select array_agg(shardid) from pg_dist_shard where not logicalrelid::text ~ 'dist');
+where all_colocated_shards_id && (select array_agg(shardid) from pg_dist_shard where not logicalrelid::text ~ 'dist');
 
 select nodename,
        nodeport,

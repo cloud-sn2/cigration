@@ -95,7 +95,7 @@ SELECT
     logicalrelid::text table_name,
     shard_name(logicalrelid,s.shardid)
 FROM pg_citus_shard_migration m
-     JOIN pg_dist_shard s ON(all_colocateion_shards_id[1] = s.shardid)
+     JOIN pg_dist_shard s ON(all_colocated_shards_id[1] = s.shardid)
 WHERE jobid=:jobid and taskid=:taskid \gset
 
 
