@@ -1,5 +1,5 @@
 -- cigration is the compound word of citus and migration
-DROP SCHEMA IF EXISTS cigration CASCADE;
+
 CREATE SCHEMA cigration;
 
 DROP TYPE IF EXISTS cigration.old_shard_placement_drop_method CASCADE;
@@ -3332,6 +3332,9 @@ BEGIN
     END IF;
 
     if (jobid_input is null) then
+        IF (select count(*) from cigration.pg_citus_shard_migration where status='running') > 0 THEN
+            RAISE EXCEPTION 'Can not cleanup recyclebin while there are running migration jobs.';
+        END IF;
         for recordinfo in select distinct split_part(schema_name,'_',3)::int jobid
                           from cigration.cigration_get_recyclebin_metadata()
                           where split_part(schema_name,'_',3)::int not in (SELECT DISTINCT(jobid) from cigration.pg_citus_shard_migration)
@@ -3473,6 +3476,14 @@ BEGIN
             RETURN true;
         END IF;
     END IF;
+    
+    IF NOT (select pg_try_advisory_xact_lock('cigration.pg_citus_shard_migration'::regclass::int, jobid_input)) THEN
+        RAISE EXCEPTION 'job % have been started.', jobid_input;
+    END IF;
+
+    IF (SELECT COUNT(*) FROM cigration.pg_citus_shard_migration WHERE jobid=jobid_input AND status in('running','error')) > 1 THEN
+        RAISE EXCEPTION 'Can not start job %, because it contains task with running or error status.', jobid_input;
+    END IF;
 
     IF (taskids is null) THEN
         select array_agg(taskid) INTO STRICT target_taskids FROM cigration.pg_citus_shard_migration where jobid=jobid_input;
@@ -3485,6 +3496,11 @@ BEGIN
 
     --get the task total count
     SELECT count(*) INTO task_total_cnt from cigration.pg_citus_shard_migration where jobid=jobid_input and taskid in (select unnest(target_taskids));
+    
+    IF task_total_cnt = 0 THEN
+        RAISE WARNING 'there are no migration tasks';
+        RETURN true;
+    END IF;
 
     --get the task total size
     SELECT sum(total_shard_size) INTO task_total_size from cigration.pg_citus_shard_migration where jobid=jobid_input and taskid in (select unnest(target_taskids));
