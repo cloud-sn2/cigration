@@ -9,10 +9,10 @@ cur_dir:=$(dir $(realpath $(firstword $(MAKEFILE_LIST))))
 
 citus_abs_srcdir:=${cur_dir}
 citus_abs_top_srcdir:=${cur_dir}
-postgres_abs_srcdir:=/var/lib/pgsql/rpm10/BUILD/postgresql-10.2
-postgres_abs_builddir:=/var/lib/pgsql/rpm10/BUILD/postgresql-10.2
+#postgres_abs_srcdir:=/var/lib/pgsql/rpm10/BUILD/postgresql-10.2
+#postgres_abs_builddir:=/var/lib/pgsql/rpm10/BUILD/postgresql-10.2
 
-PG_CONFIG:=/usr/pgsql-12/bin/pg_config
+PG_CONFIG:=pg_config
 PGXS:=$(shell $(PG_CONFIG) --pgxs)
 
 # Citus is built using PostgreSQL's pgxs
@@ -49,9 +49,13 @@ output_files := $(patsubst $(citus_abs_srcdir)/output/%.source,expected/%.out, $
 
 # have make check actually run all tests, but keep check-full as an
 # intermediate, for muscle memory backward compatibility.
-check-shard_migration: all tempinstall-main
+check: all tempinstall-main
 	$(pg_regress_multi_check) --load-extension=citus \
 	-- $(MULTI_REGRESS_OPTS) --schedule=$(citus_abs_srcdir)/shard_migration $(EXTRA_TESTS)
+
+check_base: all tempinstall-main
+	$(pg_regress_multi_check) --load-extension=citus \
+	-- $(MULTI_REGRESS_OPTS) --schedule=$(citus_abs_srcdir)/check_base $(EXTRA_TESTS)
 
 clean distclean maintainer-clean:
 	rm -f $(output_files) $(input_files)
