@@ -109,7 +109,7 @@ drop table dist7, dist8;
 --
 set citus.shard_count = 1;
 create table dist7(c1 int primary key, c2 text);
-select cigration_create_distributed_table('dist7','c1', ARRAY[:'worker_2_host'], ARRAY[:worker_2_port]);
+select cigration_create_distributed_table_with_placement('dist7','c1', ARRAY[:'worker_2_host'], ARRAY[:worker_2_port]);
 
 -- 查看分片的分布
 select nodename,
@@ -135,7 +135,7 @@ select count(*) from dist7;
 --
 set citus.shard_count = 8;
 create table "1234567890123456789012345678901234567890_Maxdist8_0123456789012"(c1 int primary key, c2 text);
-select cigration_create_distributed_table('"1234567890123456789012345678901234567890_Maxdist8_0123456789012"','c1', ARRAY[:'worker_2_host',:'worker_3_host'], ARRAY[:worker_2_port,:worker_3_port]);
+select cigration_create_distributed_table_with_placement('"1234567890123456789012345678901234567890_Maxdist8_0123456789012"','c1', ARRAY[:'worker_2_host',:'worker_3_host'], ARRAY[:worker_2_port,:worker_3_port]);
 
 -- 查看分片的分布
 select nodename,
@@ -163,7 +163,7 @@ select count(*) from "1234567890123456789012345678901234567890_Maxdist8_01234567
 create table dist9(c1 int primary key, c2 text);
 
 set citus.shard_replication_factor =2;
-select cigration_create_distributed_table('dist7','c1', ARRAY[:'worker_2_host'], ARRAY[:worker_2_port]);
+select cigration_create_distributed_table_with_placement('dist7','c1', ARRAY[:'worker_2_host'], ARRAY[:worker_2_port]);
 
 
 --

@@ -201,13 +201,13 @@ AS $create_distributed_table$
 $create_distributed_table$ LANGUAGE plpgsql SET search_path = 'pg_catalog','public';
 
 -- 在指定worker节点集合上创建hash分片表（colocate_with固定为'none'，不需要并发互斥）
-CREATE OR REPLACE FUNCTION cigration.cigration_create_distributed_table(table_name regclass,
+CREATE OR REPLACE FUNCTION cigration.cigration_create_distributed_table_with_placement(table_name regclass,
                         distribution_column text,
                         nodenames text[],
                         nodeports integer[]
                         )
 RETURNS void
-AS $cigration_create_distributed_table$
+AS $cigration_create_distributed_table_with_placement$
     DECLARE
         source_node_count integer;
         source_nodenames text[];
@@ -227,7 +227,7 @@ AS $cigration_create_distributed_table$
 
     --check current node is cn?
         IF (SELECT CASE WHEN (select count(*) from pg_dist_node)>0 THEN (select groupid from pg_dist_local_group) ELSE -1 END) <> 0 THEN
-            RAISE 'Function cigration.cigration_create_distributed_table could only be executed on coordinate node';
+            RAISE 'Function cigration.cigration_create_distributed_table_with_placement could only be executed on coordinate node';
         END IF;
 
     --check citus.shard_replication_factor
@@ -387,7 +387,7 @@ AS $cigration_create_distributed_table$
         END;
 
     END;
-$cigration_create_distributed_table$ LANGUAGE plpgsql SET search_path = 'cigration','public';
+$cigration_create_distributed_table_with_placement$ LANGUAGE plpgsql SET search_path = 'cigration','public';
 
 -- 创建分片表函数，接口和create_distributed_table()完全兼容
 -- 为确保colocate_with指向的表名被正确解析，cigration_create_distributed_table()函数内部的search_path需要和会话保持一致
@@ -1314,10 +1314,10 @@ RETURNS void
 AS $cigration_print_log$
 BEGIN  
     if (log_level = 'notice') then
-        set log_min_messages to notice;
+        set local log_min_messages to notice;
         raise notice '% % : %',clock_timestamp(),func_name,log_message;
     elsif (log_level = 'debug') then
-        set log_min_messages to debug;
+        set local log_min_messages to debug;
         raise debug '% % : %',clock_timestamp(),func_name,log_message;
     else
         raise exception 'only support log message in notice or debug level.';

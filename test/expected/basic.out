@@ -71,7 +71,7 @@ select create_distributed_table('tb_unlogged','c1', colocate_with=>'dist1');
 
 select * from cigration_create_move_node_job(:'worker_1_host', :worker_1_port, :'worker_3_host', :worker_3_port);
 ERROR:  there are unlogged distributed table which colocate with normal distributed table in 1 colocation groups.
-CONTEXT:  PL/pgSQL function cigration_create_general_shard_migration_job(text[],text[]) line 104 at RAISE
+CONTEXT:  PL/pgSQL function cigration_create_general_shard_migration_job(text[],text[]) line 108 at RAISE
 SQL statement "select cigration.cigration_create_general_shard_migration_job(array[concat(input_source_nodename, ':', input_source_nodeport)], array[concat(input_target_nodename, ':', input_target_nodeport)])"
 PL/pgSQL function cigration_create_move_node_job(text,integer,text,integer) line 41 at SQL statement
 drop table tb_unlogged;
@@ -251,7 +251,7 @@ select count(*) from dist4;
 -- 无job时，启动job报错
 select cigration_run_shard_migration_job();
 WARNING:  there are no migration job
-CONTEXT:  PL/pgSQL function cigration_run_shard_migration_job(integer,integer[],integer,interval,boolean) line 30 at RAISE
+CONTEXT:  PL/pgSQL function cigration_run_shard_migration_job(integer,integer[],integer,interval,boolean) line 34 at RAISE
  cigration_run_shard_migration_job 
 -----------------------------------
  t

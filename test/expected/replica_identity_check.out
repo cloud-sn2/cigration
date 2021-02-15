@@ -56,7 +56,7 @@ while executing query on dblink connection named "cigration_run_shard_migration_
 SQL statement "SELECT * FROM dblink('cigration_run_shard_migration_job', 
                                                       $sql$SELECT cigration.cigration_start_shard_migration_task(11, 71, longtime_tx_threshold=>'@ 30 mins', with_replica_identity_check=>'t')$sql$
                                                       ) AS t(result_record text)"
-PL/pgSQL function cigration_run_shard_migration_job(integer,integer[],integer,interval,boolean) line 95 at EXECUTE
+PL/pgSQL function cigration_run_shard_migration_job(integer,integer[],integer,interval,boolean) line 99 at EXECUTE
 -- 检查迁移任务状态，期待迁移异常
 select source_nodename,source_nodeport,target_nodename,target_nodeport,status,total_shard_count,error_message
 from pg_citus_shard_migration where jobid=:jobid and taskid=:taskid;

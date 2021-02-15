@@ -139,7 +139,7 @@ select count(*) from dist1 a left join dist5 b on(a.c1=b.c1) left join dist6 c o
 (1 row)
 
 --
--- 3. 存在迁移任务时，不允许创建hash分片表，防止破坏分片表的亲和依赖以及破坏分片的迁移目标
+-- 3. 存在迁移任务时，不允许创建hash亲和分片表，防止破坏分片表的亲和依赖以及破坏分片的迁移目标
 --
 -- 创建分片迁移任务
 select jobid from cigration_create_move_node_job(:'worker_1_host', :worker_1_port, :'worker_3_host', :worker_3_port) limit 1 \gset
@@ -148,15 +148,18 @@ create table dist7(c1 int primary key, c2 text);
 select cigration_create_distributed_table('dist7','c1', colocate_with=>'default');
 ERROR:  create colocated hash distributed table is forbidden during the shard migration.
 HINT:  you could check cigration.pg_citus_shard_migration for existing shard migration tasks.
-CONTEXT:  PL/pgSQL function cigration_create_distributed_table(regclass,text,citus.distribution_type,text) line 17 at RAISE
+CONTEXT:  PL/pgSQL function cigration_create_distributed_table(regclass,text,citus.distribution_type,text) line 21 at RAISE
 select cigration_create_distributed_table('dist7','c1', colocate_with=>'dist1');
 ERROR:  create colocated hash distributed table is forbidden during the shard migration.
 HINT:  you could check cigration.pg_citus_shard_migration for existing shard migration tasks.
-CONTEXT:  PL/pgSQL function cigration_create_distributed_table(regclass,text,citus.distribution_type,text) line 17 at RAISE
+CONTEXT:  PL/pgSQL function cigration_create_distributed_table(regclass,text,citus.distribution_type,text) line 21 at RAISE
+-- 创建非亲和分片表，期待成功
 select cigration_create_distributed_table('dist7','c1', colocate_with=>'none');
-ERROR:  create colocated hash distributed table is forbidden during the shard migration.
-HINT:  you could check cigration.pg_citus_shard_migration for existing shard migration tasks.
-CONTEXT:  PL/pgSQL function cigration_create_distributed_table(regclass,text,citus.distribution_type,text) line 17 at RAISE
+ cigration_create_distributed_table 
+------------------------------------
+ 
+(1 row)
+
 -- 创建append分片表，期待成功
 create table dist8(c1 int, c2 text);
 select cigration_create_distributed_table('dist8','c1', distribution_type=>'append');
@@ -171,9 +174,9 @@ drop table dist7, dist8;
 --
 set citus.shard_count = 1;
 create table dist7(c1 int primary key, c2 text);
-select cigration_create_distributed_table('dist7','c1', ARRAY[:'worker_2_host'], ARRAY[:worker_2_port]);
- cigration_create_distributed_table 
-------------------------------------
+select cigration_create_distributed_table_with_placement('dist7','c1', ARRAY[:'worker_2_host'], ARRAY[:worker_2_port]);
+ cigration_create_distributed_table_with_placement 
+---------------------------------------------------
  
 (1 row)
 
@@ -205,7 +208,7 @@ from pg_dist_partition,t where logicalrelid::text ~ 'dist' order by colocationid
  dist5        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
  dist6        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
  dist4        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                    13
- dist7        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                    14
+ dist7        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                    15
 (7 rows)
 
 select count(*) from dist7;
@@ -219,9 +222,9 @@ select count(*) from dist7;
 --
 set citus.shard_count = 8;
 create table "1234567890123456789012345678901234567890_Maxdist8_0123456789012"(c1 int primary key, c2 text);
-select cigration_create_distributed_table('"1234567890123456789012345678901234567890_Maxdist8_0123456789012"','c1', ARRAY[:'worker_2_host',:'worker_3_host'], ARRAY[:worker_2_port,:worker_3_port]);
- cigration_create_distributed_table 
-------------------------------------
+select cigration_create_distributed_table_with_placement('"1234567890123456789012345678901234567890_Maxdist8_0123456789012"','c1', ARRAY[:'worker_2_host',:'worker_3_host'], ARRAY[:worker_2_port,:worker_3_port]);
+ cigration_create_distributed_table_with_placement 
+---------------------------------------------------
  
 (1 row)
 
@@ -260,8 +263,8 @@ from pg_dist_partition,t where logicalrelid::text ~ 'dist' order by colocationid
  dist5                                                             | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
  dist6                                                             | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
  dist4                                                             | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                    13
- dist7                                                             | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                    14
- "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                    15
+ dist7                                                             | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                    15
+ "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                    16
 (8 rows)
 
 select count(*) from "1234567890123456789012345678901234567890_Maxdist8_0123456789012";
@@ -275,9 +278,9 @@ select count(*) from "1234567890123456789012345678901234567890_Maxdist8_01234567
 --
 create table dist9(c1 int primary key, c2 text);
 set citus.shard_replication_factor =2;
-select cigration_create_distributed_table('dist7','c1', ARRAY[:'worker_2_host'], ARRAY[:worker_2_port]);
+select cigration_create_distributed_table_with_placement('dist7','c1', ARRAY[:'worker_2_host'], ARRAY[:worker_2_port]);
 ERROR:  citus.shard_replication_factor must be 1
-CONTEXT:  PL/pgSQL function cigration_create_distributed_table(regclass,text,text[],integer[]) line 26 at RAISE
+CONTEXT:  PL/pgSQL function cigration_create_distributed_table_with_placement(regclass,text,text[],integer[]) line 26 at RAISE
 --
 -- 7. 清理测试环境
 --

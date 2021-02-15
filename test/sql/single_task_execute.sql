@@ -115,7 +115,6 @@ SELECT dblink_exec(format('host=%s port=%s user=%s dbname=%s',
 select cigration_complete_shard_migration_task(:jobid, :taskid);
 select cigration_monitor_shard_migration_task(:jobid, :taskid);
 
-
 -- 取消迁移任务
 select cigration_cancel_shard_migration_task(:jobid, :taskid);
 select cigration_monitor_shard_migration_task(:jobid, :taskid);
@@ -131,6 +130,13 @@ from pg_dist_shard_placement p
      join pg_dist_shard s on(p.shardid = s.shardid)
 where logicalrelid::text ~ 'dist'
 order by nodename,nodeport,logicalrelid,shardminvalue;
+
+-- 删除人为构造主键冲突时插入的数据
+SELECT dblink_exec(format('host=%s port=%s user=%s dbname=%s',
+                  :'source_nodename', :'source_nodeport', CURRENT_USER, current_database()), 
+                   format($$delete from %s where c1 = -1$$, 
+                          :'shard_name')
+                   );
 
 select count(*) from dist1 a left join dist2 b on(a.c1=b.c1) left join dist3 c on (a.c1=c.c1);
 

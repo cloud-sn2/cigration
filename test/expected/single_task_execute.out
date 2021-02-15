@@ -294,10 +294,21 @@ order by nodename,nodeport,logicalrelid,shardminvalue;
  localhost |    57639 | dist3        | 536870912     | 1073741823
 (24 rows)
 
+-- 删除人为构造主键冲突时插入的数据
+SELECT dblink_exec(format('host=%s port=%s user=%s dbname=%s',
+                  :'source_nodename', :'source_nodeport', CURRENT_USER, current_database()), 
+                   format($$delete from %s where c1 = -1$$, 
+                          :'shard_name')
+                   );
+ dblink_exec 
+-------------
+ DELETE 1
+(1 row)
+
 select count(*) from dist1 a left join dist2 b on(a.c1=b.c1) left join dist3 c on (a.c1=c.c1);
  count  
 --------
- 100001
+ 100000
 (1 row)
 
 -- 重置被取消的迁移任务
