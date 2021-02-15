@@ -1314,10 +1314,8 @@ RETURNS void
 AS $cigration_print_log$
 BEGIN  
     if (log_level = 'notice') then
-        set local log_min_messages to notice;
         raise notice '% % : %',clock_timestamp(),func_name,log_message;
     elsif (log_level = 'debug') then
-        set local log_min_messages to debug;
         raise debug '% % : %',clock_timestamp(),func_name,log_message;
     else
         raise exception 'only support log message in notice or debug level.';
@@ -3572,6 +3570,9 @@ BEGIN
 
         --shard migration
         BEGIN
+            -- 设置log_min_messages为notice，记录迁移详细信息到错误日志文件
+            PERFORM dblink_exec('cigration_run_shard_migration_job','set log_min_messages to notice');
+
             IF recordinfo.status = 'init' THEN
                 --start migration
                 EXECUTE format($$SELECT * FROM dblink('cigration_run_shard_migration_job', 
