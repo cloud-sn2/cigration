@@ -1,6 +1,6 @@
-# cigration
+# Cigration extension
 comment = 'Citus shards migration tool'
-default_version = '1.0'
+default_version = '1.1'
 requires = 'citus,dblink'
-superuser = true
-relocatable = true
+relocatable = false
+schema = pg_catalog
