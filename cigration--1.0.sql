@@ -894,7 +894,7 @@ AS $citus_move_shard_placement$
                 END IF;
             END LOOP;
 
-        --lock tables from executing SQL on workers which hava metadata
+        --lock tables from executing SQL on workers which have metadata
             IF metadata_node_count >=1 THEN
                 FOR j IN 1..metadata_node_count LOOP                    
                     --lock tables from executing DDL on citus_move_shard_placement_node

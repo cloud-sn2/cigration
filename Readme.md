@@ -13,13 +13,12 @@ Citus的分片表由CN上的一个逻辑表和分布在各个Worker上的若干�
 ### 1.1 扩容
 
 1. 添加新的worker节点到Citus集群
-
 2. 从既有worker节点迁移部分分片到新worker节点，实现分片部署均衡
 
 ### 1.2 缩容
 
- 	1. 从将被缩容掉的Worker迁出分片
- 	2. 从Citus集群删除Worker
+ 1. 从将被缩容掉的Worker迁出分片
+ 2. 从Citus集群删除Worker
 
 ### 1.3 Worker节点替换
 
