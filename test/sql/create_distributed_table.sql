@@ -80,7 +80,7 @@ from pg_dist_partition,t where logicalrelid::text ~ 'dist' order by colocationid
 select count(*) from dist1 a left join dist5 b on(a.c1=b.c1) left join dist6 c on (a.c1=c.c1);
 
 --
--- 3. 存在迁移任务时，不允许创建hash分片表，防止破坏分片表的亲和依赖以及破坏分片的迁移目标
+-- 3. 存在迁移任务时，不允许创建hash亲和分片表，防止破坏分片表的亲和依赖以及破坏分片的迁移目标
 --
 
 -- 创建分片迁移任务
@@ -92,11 +92,14 @@ select cigration_create_distributed_table('dist7','c1', colocate_with=>'default'
 
 select cigration_create_distributed_table('dist7','c1', colocate_with=>'dist1');
 
+
+-- 创建非亲和分片表，期待成功
 select cigration_create_distributed_table('dist7','c1', colocate_with=>'none');
 
 -- 创建append分片表，期待成功
 create table dist8(c1 int, c2 text);
 select cigration_create_distributed_table('dist8','c1', distribution_type=>'append');
+
 
 drop table dist7, dist8;
 

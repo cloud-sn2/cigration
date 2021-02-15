@@ -200,7 +200,7 @@ AS $create_distributed_table$
     END;
 $create_distributed_table$ LANGUAGE plpgsql SET search_path = 'pg_catalog','public';
 
--- 在指定worker节点集合上创建hash分片表（colocate_with固定为'none'）
+-- 在指定worker节点集合上创建hash分片表（colocate_with固定为'none'，不需要并发互斥）
 CREATE OR REPLACE FUNCTION cigration.cigration_create_distributed_table(table_name regclass,
                         distribution_column text,
                         nodenames text[],
@@ -411,7 +411,11 @@ AS $cigration_create_distributed_table$
         END IF;
 
     -- add check for shard migration
-        IF distribution_type = 'hash' THEN
+        IF distribution_type = 'hash' AND colocate_with <> 'none' THEN
+            IF NOT (select pg_try_advisory_xact_lock('cigration.pg_citus_shard_migration'::regclass::int)) THEN
+                RAISE EXCEPTION 'Can not call cigration api concurrently.';
+            END IF;
+
             IF (select count(*) <> 0 from cigration.pg_citus_shard_migration) THEN
                 RAISE 'create colocated hash distributed table is forbidden during the shard migration.'
                       USING HINT = 'you could check cigration.pg_citus_shard_migration for existing shard migration tasks.';
@@ -1601,7 +1605,11 @@ BEGIN
     IF (SELECT CASE WHEN (select count(*) from pg_dist_node)>0 THEN (select groupid from pg_dist_local_group) ELSE -1 END) <> 0 THEN
         RAISE EXCEPTION 'function cigration_create_move_node_job could only be executed on coordinate node.';
     END IF;
-    
+
+    IF NOT (select pg_try_advisory_xact_lock('cigration.pg_citus_shard_migration'::regclass::int)) THEN
+        RAISE EXCEPTION 'Can not call cigration api concurrently.';
+    END IF;
+
     --检查是否有涉及输入节点的未归档的JOB
     if (select count(*) <> 0 from cigration.pg_citus_shard_migration m
         where array[concat(m.source_nodename,':',m.source_nodeport), concat(m.target_nodename,':',m.target_nodeport)] && 
@@ -2643,13 +2651,17 @@ RETURNS text
 -- 函数名：cigration.cigration_cancel_shard_migration_job
 -- 函数功能：job级别的取消函数，将非running状态的task从迁移任务表中删除，将任务信息归档到历史表
 -- 参数：jobid_input int 
--- 返回值：cancel_succeed：取消成功
+-- 返回值：boolean。取消成功返回true
 -- 
 AS $cigration_cancel_shard_migration_job$
 BEGIN
     -- 执行节点必须是CN节点
     IF (SELECT CASE WHEN (select count(*) from pg_dist_node)>0 THEN (select groupid from pg_dist_local_group) ELSE -1 END) <> 0 THEN
         RAISE EXCEPTION 'function cigration_cancel_shard_migration_job could only be executed on coordinate node.';
+    END IF;
+
+    IF NOT (select pg_try_advisory_xact_lock_shared('cigration.pg_citus_shard_migration'::regclass::int)) THEN
+        RAISE EXCEPTION 'Can not call cigration api concurrently.';
     END IF;
 
     --判断jobid_input是否为空
@@ -2664,27 +2676,29 @@ BEGIN
         END IF;
     END IF;
 
-    if (taskid_input is null) then
-        -- 判断任务状态
-        if (select count(*) <> 0 from cigration.pg_citus_shard_migration where jobid = jobid_input and status = 'running') then
-            raise exception 'some tasks are running in job [%].please cancel the running task first using function: cigration.cigration_cancel_shard_migration_task.',jobid_input;
-        elsif (select count(*) <> 0 from cigration.pg_citus_shard_migration where jobid = jobid_input and status = 'error') then
-            raise exception 'some tasks are in error status in job [%].please cleanup the error task first using function: cigration.cigration_cleanup_error_env.',jobid_input;
-        end if;
+    IF NOT (select pg_try_advisory_xact_lock('cigration.pg_citus_shard_migration'::regclass::int, jobid_input)) THEN
+        RAISE EXCEPTION 'Can not get lock for job %.', jobid_input
+              USING HINT = 'If the shard migration job is runing, please send CTRL-C or call pg_terminate_backend() to stop it first.';
+    END IF;
+
+    -- 判断任务状态
+    if (select count(*) <> 0 from cigration.pg_citus_shard_migration where jobid = jobid_input and status = 'error') then
+        raise exception 'some tasks are in error status in job [%].please cleanup the error task first by call: select cigration.cigration_cleanup_error_env().',jobid_input;
+    end if;
+
+    if (taskid_input is null) then        
+        perform cigration.cigration_cancel_shard_migration_task(jobid,taskid) from cigration.pg_citus_shard_migration where jobid = jobid_input and status = 'running' order by taskid;
         
         perform cigration.cigration_cleanup_shard_migration_task(jobid,taskid) from cigration.pg_citus_shard_migration where jobid = jobid_input;
     else
-        -- 判断任务状态
         if (select count(*) <> 0 from cigration.pg_citus_shard_migration where jobid = jobid_input and taskid = taskid_input and status = 'running') then
-            raise exception 'task [%] is running.please cancel the running task first using function: cigration.cigration_cancel_shard_migration_task.',taskid_input;
-        elsif (select count(*) <> 0 from cigration.pg_citus_shard_migration where jobid = jobid_input and taskid = taskid_input and status = 'error') then
-            raise exception 'task [%] is in error status.please cleanup the error task first using function: cigration.cigration_cleanup_error_env.',taskid_input;
+            perform cigration.cigration_cancel_shard_migration_task(jobid_input,taskid_input);
         end if;
         
         perform cigration.cigration_cleanup_shard_migration_task(jobid_input,taskid_input);
     end if;
     
-    return 'cancel_succeed';
+    return true;
 END;
 $cigration_cancel_shard_migration_job$ LANGUAGE plpgsql;
 
@@ -3317,9 +3331,9 @@ CREATE OR REPLACE FUNCTION cigration.cigration_cleanup_recyclebin(jobid_input in
 RETURNS void
 -- 
 -- 函数名：cigration.cigration_cleanup_recyclebin
--- 函数功能：清理各个worker上残留的备份数据
+-- 函数功能：清空各个worker上残留的回收站
 -- 参数：jobid_input integer
--- 返回值：true/false 
+-- 返回值：void
 --  
 AS $cigration_cleanup_recyclebin$
 DECLARE
@@ -3332,6 +3346,10 @@ BEGIN
     END IF;
 
     if (jobid_input is null) then
+        IF NOT (select pg_try_advisory_xact_lock('cigration.pg_citus_shard_migration'::regclass::int)) THEN
+            RAISE EXCEPTION 'Can not call cigration api concurrently.';
+        END IF;
+
         IF (select count(*) from cigration.pg_citus_shard_migration where status='running') > 0 THEN
             RAISE EXCEPTION 'Can not cleanup recyclebin while there are running migration jobs.';
         END IF;
@@ -3339,18 +3357,29 @@ BEGIN
                           from cigration.cigration_get_recyclebin_metadata()
                           where split_part(schema_name,'_',3)::int not in (SELECT DISTINCT(jobid) from cigration.pg_citus_shard_migration)
                           ORDER BY split_part(schema_name,'_',3)::int loop
+            
             execute_sql := format('select run_command_on_workers(''DROP SCHEMA IF EXISTS cigration_recyclebin_%s CASCADE'')', recordinfo.jobid);
             EXECUTE execute_sql;
         end loop;
     else
+        IF NOT (select pg_try_advisory_xact_lock_shared('cigration.pg_citus_shard_migration'::regclass::int)) THEN
+            RAISE EXCEPTION 'Can not call cigration api concurrently.';
+        END IF;
+
+        IF NOT (select pg_try_advisory_xact_lock('cigration.pg_citus_shard_migration'::regclass::int, jobid_input)) THEN
+            RAISE EXCEPTION 'Can not get lock for job %.', jobid_input;
+        END IF;
+
         IF (select count(*) from cigration.pg_citus_shard_migration where jobid=jobid_input) > 0 THEN
-            RAISE EXCEPTION 'The input param jobid_input is invalid because of the migration job depends it.';
+            RAISE EXCEPTION 'The input param jobid_input is invalid because of the migration job depends it.'
+                USING HINT = 'If you want to cancle the shard migration job, call function cigration_cancel_shard_migration_job() first';
         END IF;
         execute_sql := format('select run_command_on_workers(''DROP SCHEMA IF EXISTS cigration_recyclebin_%s CASCADE'')', jobid_input);
         EXECUTE execute_sql;
     end if;
 END;
 $cigration_cleanup_recyclebin$ LANGUAGE plpgsql;
+
 
 CREATE OR REPLACE FUNCTION cigration.cigration_get_recyclebin_metadata()
 RETURNS TABLE(nodename text, nodeport int, schema_name text)
@@ -3397,6 +3426,10 @@ BEGIN
     --执行节点必须是CN节点
     IF (SELECT CASE WHEN (select count(*) from pg_dist_node)>0 THEN (select groupid from pg_dist_local_group) ELSE -1 END) <> 0 THEN
         RAISE EXCEPTION 'function cigration_cleanup_recyclebin could only be executed on coordinate node.';
+    END IF;
+
+    IF NOT (select pg_try_advisory_xact_lock('cigration.pg_citus_shard_migration'::regclass::int)) THEN
+        RAISE EXCEPTION 'Can not call cigration api concurrently.';
     END IF;
 
     --判断jobid_input是否为空
@@ -3463,6 +3496,10 @@ BEGIN
     --执行节点必须是CN节点
     IF (SELECT CASE WHEN (select count(*) from pg_dist_node)>0 THEN (select groupid from pg_dist_local_group) ELSE -1 END) <> 0 THEN
         RAISE EXCEPTION 'function cigration_run_shard_migration_job could only be executed on coordinate node.';
+    END IF;
+
+    IF NOT (select pg_try_advisory_xact_lock_shared('cigration.pg_citus_shard_migration'::regclass::int)) THEN
+        RAISE EXCEPTION 'Can not call cigration api concurrently.';
     END IF;
 
     --判断jobid_input是否为空
