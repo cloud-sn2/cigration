@@ -1,0 +1,1 @@
+pg_regress_multi.pl is come from Citus(https://github.com/citusdata/citus/), so follow the Citus's AGPL license, other files follow the Apache 2.0 license

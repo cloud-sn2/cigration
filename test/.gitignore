@@ -1,0 +1,28 @@
+# Local binaries
+/pg_regress
+
+# Generated subdirectories
+/tmp_check/
+/tmp_upgrade/
+/build/
+/results/
+/log/
+/bin/test/results/
+
+# Regression test output
+/regression.diffs
+/regression.out
+/test_times.log
+
+# Regression test timing
+/test_times.log
+
+# Failure test side effets
+/proxy.output
+
+# python
+*.pyc
+
+# output from diff normalization that shouldn't be commited
+*.unmodified
+*.modified

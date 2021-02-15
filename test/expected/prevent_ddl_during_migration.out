@@ -1,0 +1,206 @@
+/** 
+测试环境信息
+CN：127.0.0.1
+    WORKER1：worker_1_host/57637
+    WORKER2：worker_2_host/57638
+    WORKER3：worker_3_host/57639
+
+worker_1_host、worker_2_host、worker_3_host：都是127.0.0.1
+*/
+set datestyle = ISO, YMD;
+set search_path = cigration_regress_test, cigration, public;
+set citus.shard_count = 8;
+set client_min_messages to warning;
+drop schema if exists cigration_regress_test cascade;
+create schema cigration_regress_test;
+--
+-- 1. 建表
+--
+-- 创建1组亲和的分片表
+create table dist1(c1 int primary key, c2 text);
+create table dist2(c1 int primary key, c2 text);
+create table dist3(c1 int primary key, c2 text);
+select create_distributed_table('dist1','c1', colocate_with=>'none');
+ create_distributed_table 
+--------------------------
+ 
+(1 row)
+
+-- 插入数据
+insert into dist1 select generate_series(1,100000), 'aaa';
+-- 查看所有分片的初始分布
+select nodename,
+       nodeport,
+       logicalrelid,
+       shardminvalue,
+       shardmaxvalue
+from pg_dist_shard_placement p
+     join pg_dist_shard s on(p.shardid = s.shardid)
+where logicalrelid::text ~ 'dist'
+order by nodename,nodeport,logicalrelid,shardminvalue;
+ nodename  | nodeport | logicalrelid | shardminvalue | shardmaxvalue 
+-----------+----------+--------------+---------------+---------------
+ localhost |    57637 | dist1        | 1073741824    | 1610612735
+ localhost |    57637 | dist1        | -2147483648   | -1610612737
+ localhost |    57637 | dist1        | -536870912    | -1
+ localhost |    57638 | dist1        | 0             | 536870911
+ localhost |    57638 | dist1        | 1610612736    | 2147483647
+ localhost |    57638 | dist1        | -1610612736   | -1073741825
+ localhost |    57639 | dist1        | -1073741824   | -536870913
+ localhost |    57639 | dist1        | 536870912     | 1073741823
+(8 rows)
+
+--
+-- 2. 创建迁移任务（init）
+--
+-- 创建迁移worker1的所有分片到worker3的job并获取第一个迁移任务的jobid和taskid
+select jobid, taskid from cigration_create_move_node_job(:'worker_1_host', :worker_1_port, :'worker_3_host', :worker_3_port) limit 1 \gset
+select source_nodename,source_nodeport,target_nodename,target_nodeport,status,total_shard_count
+from pg_citus_shard_migration where jobid=:jobid and taskid=:taskid;
+ source_nodename | source_nodeport | target_nodename | target_nodeport | status | total_shard_count 
+-----------------+-----------------+-----------------+-----------------+--------+-------------------
+ localhost       |           57637 | localhost       |           57639 | init   |                 1
+(1 row)
+
+--
+-- 3. 变更表定义（init）
+--
+-- 可以变更还未开始迁移的表
+alter table dist1 add c3 text;
+create index dist1_idx on dist1(c2);
+alter index dist1_idx rename to dist1_idx2;
+drop index dist1_idx2;
+create index dist1_idx on dist1(c2);
+-- 禁止删除迁移任务中存在的表，期待异常
+drop table dist1;
+ERROR:  Can not drop table cigration_regress_test.dist1 which is in shard migration task
+CONTEXT:  PL/pgSQL function prevent_drop_table_in_migration_task() line 8 at RAISE
+-- 禁止级联删除迁移任务中存在的表，期待异常
+drop schema if exists cigration_regress_test cascade;
+ERROR:  Can not drop table cigration_regress_test.dist1 which is in shard migration task
+CONTEXT:  PL/pgSQL function prevent_drop_table_in_migration_task() line 8 at RAISE
+-- 允许变更不相关的表
+create table tb1(id int);
+alter table tb1 add c2 text;
+create index tb1_idx on tb1(c2);
+alter index tb1_idx rename to tb1_idx2;
+drop index tb1_idx2;
+drop table tb1;
+--
+-- 4. 变更表定义（running）
+--
+select cigration_start_shard_migration_task(:jobid, :taskid);
+ cigration_start_shard_migration_task 
+--------------------------------------
+ init_succeed
+(1 row)
+
+-- 禁止变更已开始迁移的表，期待异常
+alter table dist1 add c4 text;
+ERROR:  "ALTER TABLE,CREATE INDEX,ALTER INDEX,DROP INDEX" SQL is forbidden during shard migration.
+CONTEXT:  PL/pgSQL function prevent_alter_table_in_running_migration_task() line 4 at RAISE
+create index dist1_idx_err on dist1(c2);
+ERROR:  "ALTER TABLE,CREATE INDEX,ALTER INDEX,DROP INDEX" SQL is forbidden during shard migration.
+CONTEXT:  PL/pgSQL function prevent_alter_table_in_running_migration_task() line 4 at RAISE
+alter index dist1_idx rename to dist1_idx2;
+ERROR:  "ALTER TABLE,CREATE INDEX,ALTER INDEX,DROP INDEX" SQL is forbidden during shard migration.
+CONTEXT:  PL/pgSQL function prevent_alter_table_in_running_migration_task() line 4 at RAISE
+drop index dist1_idx;
+ERROR:  "ALTER TABLE,CREATE INDEX,ALTER INDEX,DROP INDEX" SQL is forbidden during shard migration.
+CONTEXT:  PL/pgSQL function prevent_alter_table_in_running_migration_task() line 4 at RAISE
+-- 禁止删除迁移任务中存在的表，期待异常
+drop table dist1;
+ERROR:  Can not drop table cigration_regress_test.dist1 which is in shard migration task
+CONTEXT:  PL/pgSQL function prevent_drop_table_in_migration_task() line 8 at RAISE
+-- 允许创建和删除不相关的表(暂不支持alter排除不相关的表)
+create table tb1(id int);
+alter table tb1 add c2 text;
+ERROR:  "ALTER TABLE,CREATE INDEX,ALTER INDEX,DROP INDEX" SQL is forbidden during shard migration.
+CONTEXT:  PL/pgSQL function prevent_alter_table_in_running_migration_task() line 4 at RAISE
+create index tb1_idx on tb1(c2);
+ERROR:  "ALTER TABLE,CREATE INDEX,ALTER INDEX,DROP INDEX" SQL is forbidden during shard migration.
+CONTEXT:  PL/pgSQL function prevent_alter_table_in_running_migration_task() line 4 at RAISE
+alter index tb1_idx rename to tb1_idx2;
+ERROR:  relation "tb1_idx" does not exist
+drop index tb1_idx2;
+ERROR:  "ALTER TABLE,CREATE INDEX,ALTER INDEX,DROP INDEX" SQL is forbidden during shard migration.
+CONTEXT:  PL/pgSQL function prevent_alter_table_in_running_migration_task() line 4 at RAISE
+drop table tb1;
+--
+-- 5. 完成迁移（cleanuped）
+--
+select cigration_complete_shard_migration_task(:jobid, :taskid, init_sync_timeout=>10, data_sync_timeout=>20);
+ cigration_complete_shard_migration_task 
+-----------------------------------------
+ complete
+(1 row)
+
+select cigration_cleanup_shard_migration_task(:jobid, :taskid);
+ cigration_cleanup_shard_migration_task 
+----------------------------------------
+ 
+(1 row)
+
+-- 检查迁移任务开始前的表定义变更生效
+select c3 from dist1 limit 1;
+ c3 
+----
+ 
+(1 row)
+
+--
+-- 6. 变更表定义（cleanuped）
+--
+-- 允许变更已完成迁移并归档的表
+alter table dist1 add c4 text;
+create index dist1_idx_ok on dist1(c2);
+alter index dist1_idx rename to dist1_idx2;
+drop index dist1_idx2;
+-- 禁止删除迁移任务中存在的表，期待异常
+drop table dist1;
+ERROR:  Can not drop table cigration_regress_test.dist1 which is in shard migration task
+CONTEXT:  PL/pgSQL function prevent_drop_table_in_migration_task() line 8 at RAISE
+-- 归档所有剩余迁移任务
+select cigration_cleanup_shard_migration_task(jobid, taskid) from pg_citus_shard_migration;
+ cigration_cleanup_shard_migration_task 
+----------------------------------------
+ 
+ 
+(2 rows)
+
+select count(*) from pg_citus_shard_migration;
+ count 
+-------
+     0
+(1 row)
+
+-- 允许删除已完成迁移并归档的表
+drop table dist1;
+--
+-- 7. 旧分片清理
+--
+select nodename,nodeport,count(*)
+from cigration_get_recyclebin_metadata()
+group by nodename,nodeport
+order by nodename,nodeport;
+ nodename  | nodeport | count 
+-----------+----------+-------
+ localhost |    57637 |     2
+ localhost |    57638 |     2
+ localhost |    57639 |     2
+(3 rows)
+
+select cigration_cleanup_recyclebin();
+ cigration_cleanup_recyclebin 
+------------------------------
+ 
+(1 row)
+
+select nodename,nodeport,count(*)
+from cigration_get_recyclebin_metadata()
+group by nodename,nodeport
+order by nodename,nodeport;
+ nodename | nodeport | count 
+----------+----------+-------
+(0 rows)
+

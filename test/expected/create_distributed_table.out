@@ -1,0 +1,287 @@
+/** 
+测试环境信息
+CN：127.0.0.1
+    WORKER1：worker_1_host/57637
+    WORKER2：worker_2_host/57638
+    WORKER3：worker_3_host/57639
+
+worker_1_host、worker_2_host、worker_3_host：都是127.0.0.1
+*/
+set datestyle = ISO, YMD;
+set search_path = cigration_regress_test, cigration, public;
+set citus.shard_count = 8;
+set client_min_messages to warning;
+drop schema if exists cigration_regress_test cascade;
+create schema cigration_regress_test;
+--
+-- 1. 创建分片表(create_distributed_table())
+--
+-- 创建表
+create table dist1(c1 int primary key, c2 text);
+-- 直接调用2参create_distributed_table()抛出异常，引导用户使用cigration_create_distributed_table()。
+select create_distributed_table('dist1','c1');
+ERROR:  function create_distributed_table(unknown, unknown) is not unique
+LINE 1: select create_distributed_table('dist1','c1');
+               ^
+HINT:  Could not choose a best candidate function. You might need to add explicit type casts.
+-- 直接调用3参create_distributed_table()抛出异常，引导用户使用cigration_create_distributed_table()。
+select create_distributed_table('dist1','c1', 'hash');
+ERROR:  function create_distributed_table(unknown, unknown, unknown) is not unique
+LINE 1: select create_distributed_table('dist1','c1', 'hash');
+               ^
+HINT:  Could not choose a best candidate function. You might need to add explicit type casts.
+--
+-- 2. 创建分片表(cigration_create_distributed_table())
+--
+-- 2参调用cigration_create_distributed_table()
+select cigration_create_distributed_table('dist1','c1');
+ cigration_create_distributed_table 
+------------------------------------
+ 
+(1 row)
+
+with t as(
+select min(colocationid) min_colocationid from pg_dist_partition where logicalrelid::text ~ 'dist'
+)
+select logicalrelid, partmethod, partkey,colocationid - min_colocationid + 1 as relative_colocationid
+from pg_dist_partition,t where logicalrelid::text ~ 'dist' order by colocationid,logicalrelid::text;
+ logicalrelid | partmethod |                                                        partkey                                                         | relative_colocationid 
+--------------+------------+------------------------------------------------------------------------------------------------------------------------+-----------------------
+ dist1        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     1
+(1 row)
+
+select count(*) from dist1;
+ count 
+-------
+     0
+(1 row)
+
+-- 2参 + distribution_type 调用cigration_create_distributed_table()
+create table dist2(c1 int primary key, c2 text);
+select cigration_create_distributed_table('dist2', 'c1', distribution_type=>'hash');
+ cigration_create_distributed_table 
+------------------------------------
+ 
+(1 row)
+
+create table dist3(c1 int, c2 text);
+select cigration_create_distributed_table('dist3', 'c1', 'append');
+ cigration_create_distributed_table 
+------------------------------------
+ 
+(1 row)
+
+with t as(
+select min(colocationid) min_colocationid from pg_dist_partition where logicalrelid::text ~ 'dist'
+)
+select logicalrelid, partmethod, partkey,colocationid - min_colocationid + 1 as relative_colocationid
+from pg_dist_partition,t where logicalrelid::text ~ 'dist' order by colocationid,logicalrelid::text;
+ logicalrelid | partmethod |                                                        partkey                                                         | relative_colocationid 
+--------------+------------+------------------------------------------------------------------------------------------------------------------------+-----------------------
+ dist3        | a          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     1
+ dist1        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
+ dist2        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
+(3 rows)
+
+select count(*) from dist2;
+ count 
+-------
+     0
+(1 row)
+
+select count(*) from dist3;
+ count 
+-------
+     0
+(1 row)
+
+-- 2参 + colocate_with 调用cigration_create_distributed_table()
+create table dist4(c1 int primary key, c2 text);
+select cigration_create_distributed_table('dist4','c1', colocate_with=>'none');
+ cigration_create_distributed_table 
+------------------------------------
+ 
+(1 row)
+
+create table dist5(c1 int primary key, c2 text);
+select cigration_create_distributed_table('dist5','c1', colocate_with=>'dist1');
+ cigration_create_distributed_table 
+------------------------------------
+ 
+(1 row)
+
+create table dist6(c1 int primary key, c2 text);
+select cigration_create_distributed_table('dist6','c1', colocate_with=>'default');
+ cigration_create_distributed_table 
+------------------------------------
+ 
+(1 row)
+
+with t as(
+select min(colocationid) min_colocationid from pg_dist_partition where logicalrelid::text ~ 'dist'
+)
+select logicalrelid, partmethod, partkey,colocationid - min_colocationid + 1 as relative_colocationid
+from pg_dist_partition,t where logicalrelid::text ~ 'dist' order by colocationid,logicalrelid::text;
+ logicalrelid | partmethod |                                                        partkey                                                         | relative_colocationid 
+--------------+------------+------------------------------------------------------------------------------------------------------------------------+-----------------------
+ dist3        | a          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     1
+ dist1        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
+ dist2        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
+ dist5        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
+ dist6        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
+ dist4        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                    13
+(6 rows)
+
+select count(*) from dist1 a left join dist5 b on(a.c1=b.c1) left join dist6 c on (a.c1=c.c1);
+ count 
+-------
+     0
+(1 row)
+
+--
+-- 3. 存在迁移任务时，不允许创建hash亲和分片表，防止破坏分片表的亲和依赖以及破坏分片的迁移目标
+--
+-- 创建分片迁移任务
+select jobid from cigration_create_move_node_job(:'worker_1_host', :worker_1_port, :'worker_3_host', :worker_3_port) limit 1 \gset
+-- 创建hash分片表，期待异常
+create table dist7(c1 int primary key, c2 text);
+select cigration_create_distributed_table('dist7','c1', colocate_with=>'default');
+ERROR:  create colocated hash distributed table is forbidden during the shard migration.
+HINT:  you could check cigration.pg_citus_shard_migration for existing shard migration tasks.
+CONTEXT:  PL/pgSQL function cigration_create_distributed_table(regclass,text,citus.distribution_type,text) line 21 at RAISE
+select cigration_create_distributed_table('dist7','c1', colocate_with=>'dist1');
+ERROR:  create colocated hash distributed table is forbidden during the shard migration.
+HINT:  you could check cigration.pg_citus_shard_migration for existing shard migration tasks.
+CONTEXT:  PL/pgSQL function cigration_create_distributed_table(regclass,text,citus.distribution_type,text) line 21 at RAISE
+-- 创建非亲和分片表，期待成功
+select cigration_create_distributed_table('dist7','c1', colocate_with=>'none');
+ cigration_create_distributed_table 
+------------------------------------
+ 
+(1 row)
+
+-- 创建append分片表，期待成功
+create table dist8(c1 int, c2 text);
+select cigration_create_distributed_table('dist8','c1', distribution_type=>'append');
+ cigration_create_distributed_table 
+------------------------------------
+ 
+(1 row)
+
+drop table dist7, dist8;
+--
+-- 4. 在指定worker上创建分片(单分片，单worker)
+--
+set citus.shard_count = 1;
+create table dist7(c1 int primary key, c2 text);
+select cigration_create_distributed_table_with_placement('dist7','c1', ARRAY[:'worker_2_host'], ARRAY[:worker_2_port]);
+ cigration_create_distributed_table_with_placement 
+---------------------------------------------------
+ 
+(1 row)
+
+-- 查看分片的分布
+select nodename,
+       nodeport,
+	   logicalrelid,
+	   shardminvalue,
+	   shardmaxvalue
+from pg_dist_shard_placement p
+     join pg_dist_shard s on(p.shardid = s.shardid)
+where logicalrelid::text ~ 'dist7'
+order by nodename,nodeport,logicalrelid,shardminvalue;
+ nodename  | nodeport | logicalrelid | shardminvalue | shardmaxvalue 
+-----------+----------+--------------+---------------+---------------
+ localhost |    57638 | dist7        | -2147483648   | 2147483647
+(1 row)
+
+with t as(
+select min(colocationid) min_colocationid from pg_dist_partition where logicalrelid::text ~ 'dist'
+)
+select logicalrelid, partmethod, partkey,colocationid - min_colocationid + 1 as relative_colocationid
+from pg_dist_partition,t where logicalrelid::text ~ 'dist' order by colocationid,logicalrelid::text;
+ logicalrelid | partmethod |                                                        partkey                                                         | relative_colocationid 
+--------------+------------+------------------------------------------------------------------------------------------------------------------------+-----------------------
+ dist3        | a          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     1
+ dist1        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
+ dist2        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
+ dist5        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
+ dist6        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
+ dist4        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                    13
+ dist7        | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                    15
+(7 rows)
+
+select count(*) from dist7;
+ count 
+-------
+     0
+(1 row)
+
+--
+-- 5. 在指定worker上创建分片(多分片,多worker,特殊表名)
+--
+set citus.shard_count = 8;
+create table "1234567890123456789012345678901234567890_Maxdist8_0123456789012"(c1 int primary key, c2 text);
+select cigration_create_distributed_table_with_placement('"1234567890123456789012345678901234567890_Maxdist8_0123456789012"','c1', ARRAY[:'worker_2_host',:'worker_3_host'], ARRAY[:worker_2_port,:worker_3_port]);
+ cigration_create_distributed_table_with_placement 
+---------------------------------------------------
+ 
+(1 row)
+
+-- 查看分片的分布
+select nodename,
+       nodeport,
+	   logicalrelid,
+	   shardminvalue,
+	   shardmaxvalue
+from pg_dist_shard_placement p
+     join pg_dist_shard s on(p.shardid = s.shardid)
+where logicalrelid::text ~ 'dist8'
+order by nodename,nodeport,logicalrelid,shardminvalue;
+ nodename  | nodeport |                           logicalrelid                            | shardminvalue | shardmaxvalue 
+-----------+----------+-------------------------------------------------------------------+---------------+---------------
+ localhost |    57638 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | 0             | 536870911
+ localhost |    57638 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | 1610612736    | 2147483647
+ localhost |    57638 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | -1610612736   | -1073741825
+ localhost |    57638 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | -536870912    | -1
+ localhost |    57639 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | 1073741824    | 1610612735
+ localhost |    57639 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | -1073741824   | -536870913
+ localhost |    57639 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | -2147483648   | -1610612737
+ localhost |    57639 | "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | 536870912     | 1073741823
+(8 rows)
+
+with t as(
+select min(colocationid) min_colocationid from pg_dist_partition where logicalrelid::text ~ 'dist'
+)
+select logicalrelid, partmethod, partkey,colocationid - min_colocationid + 1 as relative_colocationid
+from pg_dist_partition,t where logicalrelid::text ~ 'dist' order by colocationid,logicalrelid::text;
+                           logicalrelid                            | partmethod |                                                        partkey                                                         | relative_colocationid 
+-------------------------------------------------------------------+------------+------------------------------------------------------------------------------------------------------------------------+-----------------------
+ dist3                                                             | a          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     1
+ dist1                                                             | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
+ dist2                                                             | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
+ dist5                                                             | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
+ dist6                                                             | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                     5
+ dist4                                                             | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                    13
+ dist7                                                             | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                    15
+ "1234567890123456789012345678901234567890_Maxdist8_0123456789012" | h          | {VAR :varno 1 :varattno 1 :vartype 23 :vartypmod -1 :varcollid 0 :varlevelsup 0 :varnoold 1 :varoattno 1 :location -1} |                    16
+(8 rows)
+
+select count(*) from "1234567890123456789012345678901234567890_Maxdist8_0123456789012";
+ count 
+-------
+     0
+(1 row)
+
+--
+-- 6. 指定worker创建分片表时，不允许创建副本数大于1的分片表（分片迁移不支持多副本）
+--
+create table dist9(c1 int primary key, c2 text);
+set citus.shard_replication_factor =2;
+select cigration_create_distributed_table_with_placement('dist7','c1', ARRAY[:'worker_2_host'], ARRAY[:worker_2_port]);
+ERROR:  citus.shard_replication_factor must be 1
+CONTEXT:  PL/pgSQL function cigration_create_distributed_table_with_placement(regclass,text,text[],integer[]) line 26 at RAISE
+--
+-- 7. 清理测试环境
+--
+truncate pg_citus_shard_migration;
