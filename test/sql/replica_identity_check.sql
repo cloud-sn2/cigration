@@ -148,5 +148,3 @@ select cigration_cleanup_recyclebin();
 -- 确认pg_citus_shard_migration中的记录为空
 select count(*) from pg_citus_shard_migration;
 
-truncate pg_citus_shard_migration_history;
-truncate pg_citus_shard_migration_sql_log;

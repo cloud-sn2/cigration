@@ -523,5 +523,3 @@ select count(*) from pg_citus_shard_migration;
      0
 (1 row)
 
-truncate pg_citus_shard_migration_history;
-truncate pg_citus_shard_migration_sql_log;

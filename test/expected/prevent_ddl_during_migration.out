@@ -204,8 +204,3 @@ order by nodename,nodeport;
 ----------+----------+-------
 (0 rows)
 
---
--- 8. 测试环境清理
---
-truncate pg_citus_shard_migration_history;
-truncate pg_citus_shard_migration_sql_log;

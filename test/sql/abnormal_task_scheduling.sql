@@ -209,7 +209,7 @@ select cigration_cleanup_shard_migration_task(jobid, taskid) from pg_citus_shard
 
 -- 归档所有剩余迁移任务到历史任务表
 select count(*) from pg_citus_shard_migration;
-select count(*) from pg_citus_shard_migration_history;
+select count(*) from pg_citus_shard_migration_history where jobid=:jobid;
 
 --
 -- 10. 旧分片清理
@@ -227,10 +227,3 @@ from cigration_get_recyclebin_metadata()
 group by nodename,nodeport
 order by nodename,nodeport;
 
-
---
--- 11. 测试环境清理
---
-
-truncate pg_citus_shard_migration_history;
-truncate pg_citus_shard_migration_sql_log;

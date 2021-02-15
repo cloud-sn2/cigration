@@ -146,10 +146,3 @@ from cigration_get_recyclebin_metadata()
 group by nodename,nodeport
 order by nodename,nodeport;
 
-
---
--- 8. 测试环境清理
---
-
-truncate pg_citus_shard_migration_history;
-truncate pg_citus_shard_migration_sql_log;
