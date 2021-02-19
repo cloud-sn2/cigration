@@ -636,8 +636,6 @@ TABLE(jobid integer,taskid integer,all_colocated_shards_id bigint[],source_noden
 
 - source_nodes text[]
 - target_nodes text[]
-- input_target_nodename text
-- input_target_nodeport integer
 
 返回值：integer。返回生成的迁移作业的jodid
 
@@ -850,7 +848,7 @@ execute_time     | 2021-02-12 23:26:40.189126
 
 1. 安装cigration插件后，不能继续使用`create_distributed_table()`,需要替换成`cigration.cigration_create_distributed_table`。
 
-   不过cigration插件只屏蔽了2参的`create_distributed_table()`的调用。如果你不想过多依赖cigration，并且下面的2描述的风险，可以继续使用3参或4参的方式调用`create_distributed_table()`, 比如： 
+   不过cigration插件只屏蔽了2参的`create_distributed_table()`的调用。如果你不想过多依赖cigration，并且清楚下面的2描述的风险，可以继续使用3参或4参的方式调用`create_distributed_table()`, 比如： 
 
    ```
    select create_distributed_table('tb1','c1',colocate_with=>'default');
@@ -865,8 +863,8 @@ execute_time     | 2021-02-12 23:26:40.189126
    - 当存在迁移作业时，给已有的分区表添加新的分区子表
    - 当存在迁移作业时，修改亲和关系
      - update_distributed_table_colocation(regclass,text)
-  - mark_tables_colocated(regclass,regclass[])
-   
+     - mark_tables_colocated(regclass,regclass[])
+
 3. 存在分片迁移作业时，不允许DROP迁移作业中包含的表。
 
 4. 分片迁移作业运行期间，CN上不允许执行以下DDL。
