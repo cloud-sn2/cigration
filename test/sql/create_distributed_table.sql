@@ -39,7 +39,7 @@ select cigration_create_distributed_table('dist1','c1');
 with t as(
 select min(colocationid) min_colocationid from pg_dist_partition where logicalrelid::text ~ 'dist'
 )
-select logicalrelid, partmethod, partkey,colocationid - min_colocationid + 1 as relative_colocationid
+select logicalrelid, partmethod, split_part(partkey,':',3), colocationid - min_colocationid + 1 as relative_colocationid
 from pg_dist_partition,t where logicalrelid::text ~ 'dist' order by colocationid,logicalrelid::text;
 
 select count(*) from dist1;
@@ -54,7 +54,7 @@ select cigration_create_distributed_table('dist3', 'c1', 'append');
 with t as(
 select min(colocationid) min_colocationid from pg_dist_partition where logicalrelid::text ~ 'dist'
 )
-select logicalrelid, partmethod, partkey,colocationid - min_colocationid + 1 as relative_colocationid
+select logicalrelid, partmethod, split_part(partkey,':',3),colocationid - min_colocationid + 1 as relative_colocationid
 from pg_dist_partition,t where logicalrelid::text ~ 'dist' order by colocationid,logicalrelid::text;
 
 select count(*) from dist2;
@@ -74,7 +74,7 @@ select cigration_create_distributed_table('dist6','c1', colocate_with=>'default'
 with t as(
 select min(colocationid) min_colocationid from pg_dist_partition where logicalrelid::text ~ 'dist'
 )
-select logicalrelid, partmethod, partkey,colocationid - min_colocationid + 1 as relative_colocationid
+select logicalrelid, partmethod, split_part(partkey,':',3),colocationid - min_colocationid + 1 as relative_colocationid
 from pg_dist_partition,t where logicalrelid::text ~ 'dist' order by colocationid,logicalrelid::text;
 
 select count(*) from dist1 a left join dist5 b on(a.c1=b.c1) left join dist6 c on (a.c1=c.c1);
@@ -125,7 +125,7 @@ order by nodename,nodeport,logicalrelid,shardminvalue;
 with t as(
 select min(colocationid) min_colocationid from pg_dist_partition where logicalrelid::text ~ 'dist'
 )
-select logicalrelid, partmethod, partkey,colocationid - min_colocationid + 1 as relative_colocationid
+select logicalrelid, partmethod, split_part(partkey,':',3),colocationid - min_colocationid + 1 as relative_colocationid
 from pg_dist_partition,t where logicalrelid::text ~ 'dist' order by colocationid,logicalrelid::text;
 
 select count(*) from dist7;
@@ -151,7 +151,7 @@ order by nodename,nodeport,logicalrelid,shardminvalue;
 with t as(
 select min(colocationid) min_colocationid from pg_dist_partition where logicalrelid::text ~ 'dist'
 )
-select logicalrelid, partmethod, partkey,colocationid - min_colocationid + 1 as relative_colocationid
+select logicalrelid, partmethod, split_part(partkey,':',3),colocationid - min_colocationid + 1 as relative_colocationid
 from pg_dist_partition,t where logicalrelid::text ~ 'dist' order by colocationid,logicalrelid::text;
 
 select count(*) from "1234567890123456789012345678901234567890_Maxdist8_0123456789012";
